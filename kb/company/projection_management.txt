@@ -1,0 +1,64 @@
+# ============================================================
+# EMPRESA OBJETIVO — Projection Management LTD
+# ============================================================
+# Knowledge Base: Company
+# Categoría: company
+# ============================================================
+
+## DATOS DE LA EMPRESA
+
+- Nombre: Projection Management LTD
+- País: Reino Unido (UK)
+- Oficina registrada: 8 Raven Road, London, England, E18 1HB
+- Industria / Sector: Media Representation Services (SIC 73120)
+- Año de fundación: 1 de marzo de 2023
+- Estado legal: Active (Companies House UK)
+- Tipo de empresa: Startup / Growth — empresa joven (fundada hace ~2 años)
+
+## DESCRIPCIÓN DEL NEGOCIO
+
+Projection Management es una empresa especializada en servicios de representación en medios. Su actividad está orientada al management de talento, creadores y acuerdos en la industria de medios y entretenimiento.
+
+Su mensaje central se enfoca en "crear un cambio significativo en la vida de los creadores" — lo que indica una cultura centrada en el impacto positivo para sus clientes (creators).
+
+## VALORES CORPORATIVOS
+
+Los valores de Projection Management incluyen:
+1. Integridad: Actuar con honestidad y transparencia.
+2. Excelencia: Buscar los más altos estándares en todo lo que hacen.
+3. Respeto: Tratar a todos con dignidad y consideración.
+4. Responsabilidad: Cumplir compromisos y rendir cuentas.
+5. Adaptabilidad: Capacidad de ajustarse a cambios y nuevas situaciones.
+6. Growth Mindset: Mentalidad de crecimiento y aprendizaje continuo.
+
+## CULTURA
+
+La empresa promueve una cultura orientada a creators/creadores, con énfasis en generar un cambio significativo en sus vidas. Es una empresa joven (2023), lo que sugiere un ambiente dinámico, con equipos pequeños y donde cada miembro tiene un impacto visible.
+
+## POR QUÉ QUIERO TRABAJAR EN PROJECTION MANAGEMENT
+
+Porque sus valores se alinean directamente con mi forma de trabajar: excelencia (mi QA de 92%), responsabilidad (mi récord de asistencia), adaptabilidad (operé con cambios constantes de procesos), y growth mindset (aprendí Python por cuenta propia). Además, como empresa joven y en crecimiento, valoro la oportunidad de ser parte de un equipo donde mi contribución tenga impacto real.
+
+Because their values align directly with how I work: excellence (my 92% QA), responsibility (my attendance record), adaptability (I operated through constant process changes), and growth mindset (I learned Python on my own). Also, as a young and growing company, I value the opportunity to be part of a team where my contribution has real impact.
+
+## CÓMO MI EXPERIENCIA SE ALINEA CON LA EMPRESA
+
+- Excelencia → QA promedio de 92% sobre meta de 90%, sostenido por 3+ años.
+- Responsabilidad → Solo ~5 ausencias en 3+ años, todas justificadas.
+- Adaptabilidad → Manejé cambios frecuentes de procesos y herramientas sin caída en calidad.
+- Growth Mindset → Formación en Ingeniería de Procesos (EAFIT) + curso de Python autodidacta.
+- Integridad → Comunicación transparente, escalamientos honestos y oportunos.
+- Trabajo remoto probado → 3+ años de operación 100% remota con métricas medibles.
+
+## CONTEXTO PARA PREGUNTAS SOBRE LA EMPRESA
+
+### "¿Qué sabes sobre Projection Management?"
+Projection Management es una empresa establecida en Londres en 2023, enfocada en servicios de representación en medios para creadores. Lo que más me atrae es que su misión está orientada a generar un cambio significativo en la vida de los creadores, y sus valores — especialmente integridad, excelencia y growth mindset — se alinean mucho con mi forma de trabajar.
+
+### "What do you know about Projection Management?"
+Projection Management is a London-based company established in 2023, focused on media representation services for creators. What attracts me most is their mission to create meaningful change in creators' lives, and their values — especially integrity, excellence, and growth mindset — align closely with how I work.
+
+### "¿Por qué quieres trabajar aquí? / Why do you want to work here?"
+Porque busco un equipo donde la excelencia y la responsabilidad no sean solo palabras sino la forma de operar — y eso es exactamente lo que Projection Management describe. Mi experiencia operativa de 3+ años se traduce directamente en ejecución confiable, y estar en una empresa joven y en crecimiento me motiva porque sé que mi aporte tiene impacto directo.
+
+Because I'm looking for a team where excellence and responsibility aren't just words but how they operate — and that's exactly what Projection Management describes. My 3+ years of operational experience translates directly to reliable execution, and being in a young, growing company motivates me because I know my contribution has direct impact.

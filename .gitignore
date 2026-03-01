@@ -1,0 +1,33 @@
+# Environment
+.env
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Virtual Environment
+venv/
+.venv/
+
+# ChromaDB / FAISS data
+chroma_data/
+*.faiss
+*.pkl
+
+# Temp files
+_read_docx.py
+_roadmap_content.txt
+*.tmp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage

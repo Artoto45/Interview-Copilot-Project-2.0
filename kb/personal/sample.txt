@@ -1,0 +1,41 @@
+# ============================================================
+# Personal Knowledge Base — Sample Template
+# ============================================================
+# Place your personal documents in this folder.
+# Supported formats: .txt, .pdf
+# The system will automatically chunk, embed, and index them.
+# ============================================================
+
+# CANDIDATE PROFILE
+
+## Professional Experience
+
+### Company: [Company Name]
+- Role: [Your Title]
+- Duration: [Start Date] – [End Date]
+- Key Achievements:
+  - [Achievement 1 with measurable impact]
+  - [Achievement 2 with measurable impact]
+  - [Achievement 3 with measurable impact]
+
+## Education
+
+### University: [University Name]
+- Degree: [Degree Type] in [Field]
+- Year: [Graduation Year]
+- Relevant coursework: [Course 1], [Course 2]
+
+## Technical Skills
+- Languages: Python, JavaScript, SQL
+- Frameworks: FastAPI, React, Django
+- Tools: Git, Docker, AWS
+
+## Strengths
+- [Strength 1]: [Brief example]
+- [Strength 2]: [Brief example]
+
+## Areas for Growth
+- [Area 1]: [How you're improving]
+
+## Career Objective
+[Your career goal in 2-3 sentences, focused on the role you're applying for]

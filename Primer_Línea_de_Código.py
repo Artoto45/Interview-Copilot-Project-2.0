@@ -1,0 +1,3 @@
+### Este es un proyecto de código personal y espero lograr muchas cosas con él...
+
+print('¡Hola mundo, soy programador!')

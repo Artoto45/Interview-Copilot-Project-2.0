@@ -1,0 +1,47 @@
+# ============================================================
+# Company Knowledge Base — Sample Template
+# ============================================================
+# Place company research documents in this folder.
+# Supported formats: .txt, .pdf
+# The system will automatically chunk, embed, and index them.
+# ============================================================
+
+# COMPANY PROFILE
+
+## Company Name: [Company Name]
+
+## Mission
+[Company mission statement]
+
+## Vision
+[Company vision statement]
+
+## Core Values
+- [Value 1]: [Description]
+- [Value 2]: [Description]
+- [Value 3]: [Description]
+
+## Products / Services
+- [Product 1]: [Brief description]
+- [Product 2]: [Brief description]
+
+## Company Size & Market
+- Employees: [Number]
+- Industry: [Industry]
+- Market: [B2B/B2C], [Region]
+- Founded: [Year]
+
+## Recent News
+- [Date]: [News headline and brief summary]
+- [Date]: [News headline and brief summary]
+
+## Role-Specific Information
+- Position: [Title you're applying for]
+- Department: [Department]
+- Key Responsibilities: [List from job description]
+- Required Skills: [List from job description]
+
+## Common Interview Questions for This Role
+1. Why do you want to work at [Company]?
+2. How does your experience align with [specific requirement]?
+3. What do you know about our [product/service]?

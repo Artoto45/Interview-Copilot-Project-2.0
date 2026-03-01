@@ -1,0 +1,75 @@
+# ============================================================
+# STAR STORIES — Behavioral Interview Responses (English)
+# ============================================================
+# Knowledge Base: Personal
+# Category: personal
+# Topic: star_stories_english
+# Language: English
+# ============================================================
+# These stories are used for questions like:
+# "Tell me about a time when...", "Describe a situation...",
+# "Give me an example of...", "What would you do if..."
+# ============================================================
+
+## STORY: CONSISTENCY UNDER PRESSURE
+
+Situation: At Webhelp, the workload was high and constant, with quality metrics (QA) that we had to maintain at a minimum of 90%.
+Task: My responsibility was to process cases with accuracy while maintaining quality above the operational standard.
+Action: I developed a disciplined routine — verifying each case before closing it, keeping clear documentation, and effectively prioritizing the most critical tasks. When process changes came in, I'd study them thoroughly before applying them.
+Result: I maintained an average QA of 92% consistently over 3+ years, exceeding the 90% minimum requirement. This allowed me to be recognized for maintaining stability in the operation.
+
+
+## STORY: RELIABILITY AND ATTENDANCE
+
+Situation: Remote work can be challenging in terms of discipline and consistency. At Webhelp, attendance was an important performance metric.
+Task: Maintain excellent attendance and punctuality in a 100% remote environment throughout my 3+ year tenure.
+Action: I established a fixed work routine with set schedules and a dedicated workspace. When I had a medical issue (kidney stones), I communicated it immediately and managed the situation with complete transparency.
+Result: Over 3+ years, I only had approximately 5 absences, all due to a medical emergency, always reported in advance when possible. My overall attendance record was exemplary.
+
+
+## STORY: ADAPTING TO CHANGE
+
+Situation: At Webhelp, operational processes changed frequently — new tools, procedure updates, client policy changes.
+Task: Adapt quickly to each change without letting the quality of daily work drop.
+Action: Every time a change came in, I'd study it in detail, take notes, and if something wasn't clear, I'd proactively ask my supervisor. I didn't wait to make mistakes to understand the new way of working.
+Result: I maintained consistent QA even during operational transitions, and my teammates would sometimes consult me when they had questions about new procedures.
+
+
+## STORY: COMMUNICATION AND ESCALATION
+
+Situation: In remote operations, clear communication is critical because you can't just talk to someone at the desk next to you.
+Task: Ensure that any unusual situation, blocker, or critical case was communicated and escalated in a timely manner.
+Action: I made it a personal habit to report any situation that could escalate before it became a bigger problem. I'd document the full context so the supervisor could make quick decisions.
+Result: The escalations I reported generally came with all the necessary information, which facilitated faster resolutions. This contributed to the overall stability of the operation.
+
+
+## STORY: HANDLING HIGH VOLUME
+
+Situation: There were days at Webhelp where case volume increased significantly, especially during peak seasons or when there was less staff available.
+Task: Process a higher volume of cases while maintaining quality and not leaving any pending work behind.
+Action: I'd prioritize cases by urgency, organize my workflow in blocks, and keep my documentation up to date to avoid accumulating work. I never sacrificed quality for speed — if a case required more time, I'd take it.
+Result: Even on high-volume days, my QA stayed around 92%, demonstrating that pressure didn't affect my accuracy.
+
+
+## STORY: HANDLING FAILURE / COMPANY DEPARTURE
+
+Situation: In October 2025, Webhelp implemented a restructuring driven by AI automation that affected a large portion of the staff, including me.
+Task: Handle the situation professionally and use it as a starting point for growth.
+Action: I accepted the situation with maturity, understanding it wasn't about performance but an organizational decision. Since then, I've focused on improving my skills (including learning Python), actively searching for a new remote role, and preparing myself better for the job market.
+Result: I'm in an active job search, more prepared than before, with greater clarity about the type of role where I can contribute the most value: remote assistant, operational support, or organization and follow-through roles.
+
+
+## STORY: CONTINUOUS IMPROVEMENT AND SELF-LEARNING
+
+Situation: After leaving Webhelp, I identified that I needed to expand my skills beyond operations to be more competitive in the job market.
+Task: Learn new technical skills on my own while actively job searching.
+Action: I took a Python for Beginners course and started exploring automation and technology tools. I invested my transition time in upskilling rather than just waiting.
+Result: I demonstrated that I have a growth mindset and don't stay static — I use transition periods to improve and better prepare myself for the next opportunity.
+
+
+## STORY: TEAMWORK AND SUPPORTING OTHERS
+
+Situation: At Webhelp, new team members would sometimes struggle with unfamiliar processes or tools, especially after operational changes.
+Task: Help new or struggling colleagues get up to speed without being officially assigned as a mentor.
+Action: I'd proactively share my notes, walk them through updated procedures, and answer their questions based on my experience. I did this informally — just because I knew it would help the team overall.
+Result: This helped reduce errors among the team and improved overall operational stability. My supervisor noticed and acknowledged my supportive approach.

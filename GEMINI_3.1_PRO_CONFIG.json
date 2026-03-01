@@ -1,0 +1,516 @@
+{
+  "project": {
+    "name": "Interview Copilot v2.0 — Code Improvement with Gemini 3.1 Pro",
+    "description": "Automated code improvements guided by Gemini 3.1 Pro (High) with inline reasoning",
+    "repository": "file:///C:/Users/artot/OneDrive/Desktop/Carpeta_Proyecto_Desarrollo_Software/Interview_Proyect/Nueva_Versión_2.0",
+    "language": "python",
+    "python_version": "3.11+"
+  },
+
+  "agent_config": {
+    "model": "gemini-3.1-pro-001",
+    "model_variant": "high",
+    "enable_extended_thinking": false,
+    "use_inline_reasoning": true,
+    "analysis_depth": "detailed",
+    "max_analysis_tokens": 10000,
+    "max_tokens": 8000,
+    "temperature": 0.3,
+
+    "capabilities": [
+      "code_analysis",
+      "code_generation",
+      "testing",
+      "performance_optimization",
+      "security_audit",
+      "prompt_caching"
+    ],
+
+    "constraints": [
+      "no_breaking_changes",
+      "maintain_backward_compatibility",
+      "require_test_coverage_>85",
+      "no_external_dependencies_unless_approved"
+    ],
+
+    "caching": {
+      "enable_prompt_cache": true,
+      "cache_system_prompt": true,
+      "cache_discount_percent": 90,
+      "cached_token_savings": "~90% discount on cached tokens"
+    },
+
+    "rate_limiting": {
+      "max_requests_per_minute": 100,
+      "task_timeout_seconds": 1800,
+      "max_retries": 3
+    },
+
+    "approval_gates": [
+      "before_phase_2",
+      "before_production_deploy"
+    ]
+  },
+
+  "roadmap": {
+    "total_phases": 4,
+    "total_estimated_hours": 6.5,
+    "budget_analysis_tokens": 10000,
+    "cost_estimate_usd": 1.50,
+    "cost_vs_claude_savings_percent": 92,
+    "speed_improvement_percent": 29,
+
+    "phases": [
+      {
+        "phase_number": 1,
+        "name": "Stability & Critical Fixes",
+        "estimated_hours": 1.33,
+        "estimated_analysis_tokens": 2500,
+        "priority": "CRITICAL",
+
+        "tasks": [
+          {
+            "task_id": "1.1.1",
+            "name": "Sincronización de Variables Especulativas",
+            "file": "main.py",
+            "description": "Fix race conditions en _speculative_gen_task",
+            "lines_to_modify": [108, 112, 227, 281],
+            "estimated_minutes": 22,
+            "analysis_minutes": 2,
+            "implementation_minutes": 15,
+            "test_minutes": 5,
+            "success_criteria": [
+              "No asyncio.Lock() warnings",
+              "All direct accesses via SpeculativeState",
+              "5+ test runs without crashes",
+              "pylint passes"
+            ],
+            "test_command": "pytest tests/ -k speculative -v --tb=short",
+            "fallback_strategy": "Rollback to git commit if tests fail"
+          },
+          {
+            "task_id": "1.1.2",
+            "name": "Timeout en Response Generation",
+            "file": "main.py",
+            "description": "Implement asyncio.timeout(30s) para evitar indefinite hang",
+            "lines_to_modify": [365],
+            "estimated_minutes": 15,
+            "analysis_minutes": 2,
+            "implementation_minutes": 10,
+            "test_minutes": 3,
+            "success_criteria": [
+              "asyncio.timeout(30) wrapped",
+              "TimeoutError caught and logged",
+              "Teleprompter receives [Response timeout] message",
+              "No unhandled exceptions"
+            ],
+            "test_command": "timeout 35 python main.py 2>&1 | grep -i timeout",
+            "fallback_strategy": "Try-catch with empty response fallback"
+          },
+          {
+            "task_id": "1.1.3",
+            "name": "Acceso a Atributo Privado",
+            "file": "src/transcription/openai_realtime.py",
+            "description": "Agregar getter público para _live_buffer",
+            "lines_to_modify": [165],
+            "estimated_minutes": 12,
+            "analysis_minutes": 1,
+            "implementation_minutes": 8,
+            "test_minutes": 3,
+            "success_criteria": [
+              "get_live_buffer() method exists",
+              "main.py uses public method",
+              "No direct _live_buffer access in main.py",
+              "pylint no warnings"
+            ],
+            "test_command": "grep '_live_buffer' main.py | grep -v 'get_live_buffer' && echo FAIL || echo PASS",
+            "fallback_strategy": "Add deprecation warning to _live_buffer"
+          },
+          {
+            "task_id": "1.1.4",
+            "name": "Teleprompter Healthcheck",
+            "file": "main.py",
+            "description": "Monitor subprocess + auto-restart (max 3x)",
+            "lines_to_modify": [604],
+            "estimated_minutes": 12,
+            "analysis_minutes": 2,
+            "implementation_minutes": 7,
+            "test_minutes": 3,
+            "success_criteria": [
+              "monitor_teleprompter_health() created",
+              "Max 3 restart attempts",
+              "Crash detected in <35s",
+              "Logs show health transitions"
+            ],
+            "test_command": "timeout 65 python main.py 2>&1 | grep -i monitor | head -3",
+            "fallback_strategy": "Log error and continue without UI"
+          },
+          {
+            "task_id": "1.1.5",
+            "name": "Retry Logic con Exponential Backoff",
+            "file": "main.py",
+            "description": "Implementar retry_with_backoff() para API transientes",
+            "lines_to_modify": [350],
+            "estimated_minutes": 11,
+            "analysis_minutes": 2,
+            "implementation_minutes": 7,
+            "test_minutes": 2,
+            "success_criteria": [
+              "retry_with_backoff() async function exists",
+              "Delays: 1s, 2s, 4s validated",
+              "Logs show each attempt",
+              "Fallback: None if all exhausted"
+            ],
+            "test_command": "grep 'retry_with_backoff' main.py | wc -l",
+            "fallback_strategy": "Return None and log gracefully"
+          }
+        ],
+
+        "phase_validation": {
+          "command": "bash scripts/validate_phase1.sh",
+          "criteria": {
+            "all_tests_pass": true,
+            "crash_count_in_5_runs": 0,
+            "pylint_E_warnings": 0,
+            "asyncio_warnings": 0,
+            "total_time_minutes": 80
+          },
+          "human_approval_required": false
+        }
+      },
+
+      {
+        "phase_number": 2,
+        "name": "Performance Optimization",
+        "estimated_hours": 1.5,
+        "estimated_analysis_tokens": 3000,
+        "priority": "HIGH",
+        "depends_on": ["phase_1_validation_passed"],
+
+        "tasks": [
+          {
+            "task_id": "2.1.1",
+            "name": "Semantic Similarity para Speculative Hit",
+            "file": "main.py",
+            "description": "Use embeddings para cambiar 65% → 80% threshold",
+            "lines_to_modify": [281],
+            "estimated_minutes": 45,
+            "analysis_minutes": 3,
+            "implementation_minutes": 30,
+            "test_minutes": 12,
+            "success_criteria": [
+              "is_similar_enough_semantic() implemented",
+              "Threshold changed to 0.80",
+              "Speculative hit rate maintained >50%",
+              "False positives reduced significantly"
+            ],
+            "test_command": "python -c 'from main import is_similar_enough_semantic; print(\"OK\")'",
+            "fallback_strategy": "Keep 65% threshold if embedding API unavailable"
+          },
+          {
+            "task_id": "2.2.1",
+            "name": "Compound Question Detection",
+            "file": "src/knowledge/classifier.py",
+            "description": "Mejorar detección de compound questions con regex + stemming",
+            "lines_to_modify": [83],
+            "estimated_minutes": 30,
+            "analysis_minutes": 2,
+            "implementation_minutes": 20,
+            "test_minutes": 8,
+            "success_criteria": [
+              ">95% compound questions detected",
+              "Presupuestos ajustados correctamente",
+              "test_compound passes",
+              "No performance regression"
+            ],
+            "test_command": "pytest tests/test_question_filter.py::test_compound -v",
+            "fallback_strategy": "Use fallback_classify() if improvement fails"
+          },
+          {
+            "task_id": "2.2.2",
+            "name": "Interview Signals Fuzzy Matching",
+            "file": "src/knowledge/question_filter.py",
+            "description": "Implementar fuzzy matching con stemming",
+            "lines_to_modify": [45],
+            "estimated_minutes": 30,
+            "analysis_minutes": 2,
+            "implementation_minutes": 20,
+            "test_minutes": 8,
+            "success_criteria": [
+              "has_interview_signal_fuzzy() implemented",
+              ">95% recall on real questions",
+              "<5% false positives",
+              "Latencia <10ms (fast path)"
+            ],
+            "test_command": "pytest tests/test_question_filter.py -v --tb=short",
+            "fallback_strategy": "Keep direct string matching if fuzzy too slow"
+          }
+        ],
+
+        "phase_validation": {
+          "command": "bash scripts/validate_phase2.sh",
+          "criteria": {
+            "p95_latency_ms": 5000,
+            "cache_hit_rate": 0.75,
+            "all_tests_pass": true,
+            "total_time_minutes": 105
+          },
+          "human_approval_required": true,
+          "approval_criteria": "P95 latency < 5s confirmed in 10-question session"
+        }
+      },
+
+      {
+        "phase_number": 3,
+        "name": "Quality & KB Improvement",
+        "estimated_hours": 1.5,
+        "estimated_analysis_tokens": 2500,
+        "priority": "MEDIUM",
+        "depends_on": ["phase_2_validation_passed"],
+
+        "tasks": [
+          {
+            "task_id": "3.1.1",
+            "name": "Chunk Validation & Deduplication",
+            "file": "src/knowledge/ingest.py",
+            "description": "Rechazar chunks <20 chars, deduplicar al re-ingest",
+            "lines_to_modify": [112, 140],
+            "estimated_minutes": 45,
+            "analysis_minutes": 2,
+            "implementation_minutes": 28,
+            "test_minutes": 15,
+            "success_criteria": [
+              "Chunks <20 chars rechazados",
+              "Re-ingest no crea duplicatas",
+              "ChromaDB.count() válido",
+              "test_ingest passes"
+            ],
+            "test_command": "pytest tests/test_knowledge.py::test_ingest -v",
+            "fallback_strategy": "Log and skip invalid chunks"
+          },
+          {
+            "task_id": "3.2.1",
+            "name": "Prompt Caching Audit & Optimization",
+            "file": "src/response/claude_agent.py",
+            "description": "Track cache hits/misses, mejorar warmup",
+            "lines_to_modify": [141, 161],
+            "estimated_minutes": 45,
+            "analysis_minutes": 3,
+            "implementation_minutes": 27,
+            "test_minutes": 15,
+            "success_criteria": [
+              "Cache hit rate > 75% después 3 preguntas",
+              "Cache stats exportados",
+              "Warmup usa exact system prompt",
+              "test_cache_hit passes",
+              "Gemini 90% discount aprovechado"
+            ],
+            "test_command": "pytest tests/test_response.py::test_cache -v",
+            "fallback_strategy": "Fall back to non-cached generation if benchmark fails"
+          }
+        ],
+
+        "phase_validation": {
+          "command": "bash scripts/validate_phase3.sh",
+          "criteria": {
+            "cache_hit_rate": 0.75,
+            "test_coverage": 0.85,
+            "hallucination_rate": 0.01,
+            "kb_duplicate_count": 0,
+            "total_time_minutes": 90
+          },
+          "human_approval_required": false
+        }
+      },
+
+      {
+        "phase_number": 4,
+        "name": "Observability & Production Readiness",
+        "estimated_hours": 1.5,
+        "estimated_analysis_tokens": 2000,
+        "priority": "MEDIUM",
+        "depends_on": ["phase_3_validation_passed"],
+
+        "tasks": [
+          {
+            "task_id": "4.1.1",
+            "name": "Session Metrics & Logging",
+            "file": "src/metrics.py",
+            "description": "Crear SessionMetrics dataclass, exportar JSON",
+            "lines_to_modify": ["new_file"],
+            "estimated_minutes": 36,
+            "analysis_minutes": 2,
+            "implementation_minutes": 25,
+            "test_minutes": 9,
+            "success_criteria": [
+              "SessionMetrics exported to JSON",
+              "Logs include timestamps",
+              "Metrics per question type",
+              "test_metrics passes"
+            ],
+            "test_command": "python -c 'from src.metrics import SessionMetrics; print(\"OK\")'",
+            "fallback_strategy": "Use logging-only if JSON export fails"
+          },
+          {
+            "task_id": "4.1.2",
+            "name": "Alerting & SLO Enforcement",
+            "file": "src/alerting.py",
+            "description": "Alert manager para P95 latency, cache hit rate",
+            "lines_to_modify": ["new_file"],
+            "estimated_minutes": 36,
+            "analysis_minutes": 2,
+            "implementation_minutes": 25,
+            "test_minutes": 9,
+            "success_criteria": [
+              "AlertManager class exists",
+              "P95 > 5s triggers warning",
+              "Cache hit rate < 60% triggers alert",
+              "test_alerting passes"
+            ],
+            "test_command": "pytest tests/test_alerting.py -v",
+            "fallback_strategy": "Log-only alerts if integration unavailable"
+          },
+          {
+            "task_id": "4.1.3",
+            "name": "Prometheus Integration",
+            "file": "src/prometheus.py",
+            "description": "Exportar métricas a Prometheus",
+            "lines_to_modify": ["new_file"],
+            "estimated_minutes": 18,
+            "analysis_minutes": 1,
+            "implementation_minutes": 12,
+            "test_minutes": 5,
+            "success_criteria": [
+              "Prometheus endpoint /metrics",
+              "Response latency histogram",
+              "Cache hit rate gauge",
+              "curl http://localhost:8000/metrics works"
+            ],
+            "test_command": "curl http://localhost:8000/metrics | grep response_latency",
+            "fallback_strategy": "Skip Prometheus if not available"
+          }
+        ],
+
+        "phase_validation": {
+          "command": "bash scripts/validate_phase4.sh",
+          "criteria": {
+            "metrics_exported": true,
+            "prometheus_scrape_ok": true,
+            "slos_met": true,
+            "uptime_percentage": 99.0,
+            "total_time_minutes": 90
+          },
+          "human_approval_required": true,
+          "approval_criteria": "All metrics visible in Prometheus, SLOs met for 24h"
+        }
+      }
+    ]
+  },
+
+  "analysis_directives": {
+    "style": "gemini_inline_reasoning",
+    "per_task": {
+      "analyze_phase_minutes": 2,
+      "plan_and_implement_phase_minutes": 20,
+      "test_phase_minutes": 10,
+      "validate_phase_minutes": 2
+    },
+    "instructions": [
+      "Analyze and plan INLINE in the first paragraph (2 min max)",
+      "Include reasoning directly in code comments",
+      "Combine plan + implementation (not separate sections)",
+      "Test cases should be concise and direct",
+      "Validation phase: quick summary + ready for next task",
+      "Use Gemini's inline reasoning strength (not extended thinking)",
+      "Reference specific line numbers from files",
+      "Mention trade-offs briefly in context"
+    ]
+  },
+
+  "deployment_config": {
+    "strategy": "staged_rollout",
+    "stages": [
+      {
+        "stage": "canary",
+        "traffic_percentage": 10,
+        "duration_hours": 6,
+        "rollback_condition": "error_rate > 5% OR p95_latency > 7000ms"
+      },
+      {
+        "stage": "beta",
+        "traffic_percentage": 50,
+        "duration_hours": 12,
+        "rollback_condition": "hallucination_rate > 2% OR uptime < 99%"
+      },
+      {
+        "stage": "production",
+        "traffic_percentage": 100,
+        "rollback_condition": "p95_latency > 7s OR error_rate > 5%"
+      }
+    ]
+  },
+
+  "success_metrics": {
+    "global_targets": {
+      "p95_latency_ms": 5000,
+      "cache_hit_rate": 0.80,
+      "test_coverage_percent": 87,
+      "uptime_percent": 99.5,
+      "hallucination_rate": 0.01,
+      "total_implementation_hours": 6.5
+    },
+    "measurement_method": "automated_benchmarks",
+    "measurement_frequency_minutes": 60,
+    "dashboard_url": "http://localhost:3000/dashboards/interview-copilot"
+  },
+
+  "cost_analysis": {
+    "model": "gemini-3.1-pro-001",
+    "estimated_input_tokens": 400000,
+    "estimated_output_tokens": 100000,
+    "input_price_per_million": 1.25,
+    "output_price_per_million": 5.0,
+    "cache_tokens": 2000,
+    "cache_discount_percent": 90,
+    "estimated_cost_usd": 1.50,
+    "cost_vs_claude_opus_savings_percent": 92,
+    "speed_improvement_percent": 29,
+    "notes": "Gemini 3.1 Pro is 3.3x faster and 92% cheaper than Claude Opus 4.6"
+  },
+
+  "git_config": {
+    "auto_commit": false,
+    "commit_per_task": true,
+    "commit_message_template": "[PHASE-X] Task X.Y.Z: {task_name}\n\n{description}\n\nSuccess criteria met:\n- {criteria1}\n- {criteria2}",
+    "push_to_branch": "feature/gemini-improvements",
+    "create_pull_request": true,
+    "pr_description_template": "Automated improvement by Gemini 3.1 Pro (High)\n\nPhase: {phase}\nTasks completed: {task_list}\nValidation: {validation_status}\nImplementation time: {actual_hours}h\nCost: ${cost}\n\nFixes:\n{fixes_list}"
+  },
+
+  "monitoring": {
+    "enable_logging": true,
+    "log_level": "INFO",
+    "log_file": "logs/agent_execution.log",
+    "metrics_export": "prometheus",
+    "metrics_port": 8000,
+    "health_check_interval_seconds": 30
+  },
+
+  "error_handling": {
+    "on_test_failure": {
+      "action": "rollback_and_log",
+      "max_retries": 3,
+      "retry_delay_seconds": 60
+    },
+    "on_human_approval_timeout": {
+      "action": "pause_and_notify",
+      "timeout_hours": 24,
+      "escalation": "notify_project_lead"
+    },
+    "on_unknown_error": {
+      "action": "create_issue_and_pause",
+      "notify": ["devops@team.com"]
+    }
+  }
+}
+

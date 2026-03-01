@@ -1,0 +1,58 @@
+{
+    "name": "interview-copilot",
+    "version": "2.0.0",
+    "description": "Bilingual Interview Copilot with Real-time RAG and Teleprompter",
+    "python": "3.11+",
+    "agents": [
+        {
+            "name": "01-CoordinatorAgent",
+            "model": "claude-opus-4-6",
+            "role": "Pipeline orchestration and global flow control",
+            "tools": ["task_planner", "file_system", "kb_access"]
+        },
+        {
+            "name": "02-AudioCaptureAgent",
+            "model": "claude-sonnet-4-5",
+            "role": "Dual audio stream capture via Voicemeeter",
+            "tools": ["terminal", "sounddevice"]
+        },
+        {
+            "name": "03-TranscriptionAgent",
+            "model": "deepgram-nova-2",
+            "role": "Real-time transcription with diarization",
+            "tools": ["websocket", "deepgram_api"]
+        },
+        {
+            "name": "04-KnowledgeAgent",
+            "model": "claude-opus-4-6",
+            "role": "KB management, embeddings, RAG retrieval",
+            "tools": ["faiss", "chromadb", "openai_embeddings"]
+        },
+        {
+            "name": "05-ResponseAgent",
+            "model": "claude-opus-4-6",
+            "role": "Generate natural English responses with KB context",
+            "tools": ["anthropic_api", "rag_context", "classifier"]
+        },
+        {
+            "name": "06-TeleprompterAgent",
+            "model": "claude-sonnet-4-5",
+            "role": "Display control, speed, and formatting",
+            "tools": ["pyqt5", "websocket_local"]
+        },
+        {
+            "name": "07-QAAgent",
+            "model": "claude-opus-4-6",
+            "role": "Response validation, hallucination detection, latency monitoring",
+            "tools": ["evaluator_chain", "latency_monitor"]
+        }
+    ],
+    "environment": {
+        "hardware": "Asus VivoBook R5 5600H / 16 GB RAM",
+        "audio": "Voicemeeter Banana (WDM/KS drivers)",
+        "target_latency": {
+            "p50": "< 1.2s",
+            "p95": "< 2.2s"
+        }
+    }
+}
