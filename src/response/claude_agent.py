@@ -23,7 +23,7 @@ logger = logging.getLogger("response.claude")
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-MODEL = "gemini-3.1-pro-001"
+MODEL = "claude-3-5-sonnet-20241022"  # Claude Sonnet 4 (latest, fast, high quality)
 
 SYSTEM_PROMPT = """\
 You are an English interview copilot. Your user is a non-native English \
