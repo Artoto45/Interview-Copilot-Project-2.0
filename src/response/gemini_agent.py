@@ -1,29 +1,25 @@
 """
-Response Agent — Claude Sonnet 4 (Prompt Caching + Fast Streaming)
-====================================================================
-High quality + low latency via:
-    - Anthropic Prompt Caching (85% TTFT reduction after first call)
-    - AsyncAnthropic (non-blocking event loop)
-    - NO Extended Thinking
-    - Enhanced prompt with KB grounding and no meta-commentary
-
-Target latency: ~2s after cache warm, ~4s on cache miss.
+Response Agent — Google Gemini 3.1 Pro (Streaming)
+===================================================
+High quality + low latency interview copilot responses using native Gemini integration.
+Replaces Claude in Phase 5 of the architectural roadmap to achieve ~100 tok/sec speed.
 """
 
 import logging
 import os
-from typing import AsyncIterator, Optional
+from typing import AsyncGenerator, Optional
 
-import anthropic
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
 load_dotenv()
-logger = logging.getLogger("response.claude")
+logger = logging.getLogger("response.gemini")
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-MODEL = "claude-3-5-sonnet-20241022"  # Corrected to valid Claude model
+MODEL = "gemini-3.1-pro-001"
 
 SYSTEM_PROMPT = """\
 You are an English interview copilot. Your user is a non-native English \
@@ -82,50 +78,53 @@ INSTANT_OPENERS = {
 }
 
 
-class ResponseAgent:
+class GeminiAgent:
     """
-    Generates interview responses using Claude Sonnet 4 with:
-    - Prompt caching (85% TTFT reduction)
-    - Async streaming
-    - Two-phase instant openers
+    Generates interview responses natively via Gemini 3.1 Pro SDK.
+    Features:
+    - ~100 tok/sec output speed
+    - Asynchronous streaming
+    - Direct Context Window scaling (1M capable)
     """
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
-        self.client = anthropic.AsyncAnthropic(api_key=self.api_key)
+        key = api_key or os.getenv("GOOGLE_API_KEY")
+        if not key:
+            logger.warning("GOOGLE_API_KEY is not set. Gemini API will fail.")
+            
+        self.client = genai.Client(api_key=key)
         self._warmed_up = False
         
-        # Phase 3 Quality: Cache Audit & Optimization
+        # Phase 3 Quality: Stats Tracking
         self._cache_stats = {
             "total_calls": 0,
             "cache_hits": 0,
             "by_type": {}
         }
+        self._last_cache_hits = 0
 
     async def warmup(self):
-        """Prime the prompt cache with the system prompt."""
+        """Warm up the Async Gemini client with a tiny initial call."""
         if self._warmed_up:
             return
             
-        logger.info("Warming up ResponseAgent cache...")
+        logger.info("Warming up Gemini ResponseAgent...")
         try:
-            # Send a minimal request with the exact system prompt
-            # to trigger server-side caching
-            await self.client.messages.create(
-                model=MODEL,
-                max_tokens=10,
+            # Minimal prompt test
+            config = types.GenerateContentConfig(
                 temperature=0.0,
-                system=[
-                    {
-                        "type": "text",
-                        "text": SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[{"role": "user", "content": "Hi"}],
+                max_output_tokens=10,
+                system_instruction=SYSTEM_PROMPT
+            )
+            
+            # Using synchronous call during initialize since it's just a warmup
+            self.client.models.generate_content(
+                model=MODEL,
+                contents=["Hi"],
+                config=config,
             )
             self._warmed_up = True
-            logger.info("ResponseAgent cache warmed up successfully ✓")
+            logger.info("GeminiAgent initialized successfully ✓")
         except Exception as e:
             logger.warning(f"Cache warmup failed: {e}")
 
@@ -133,10 +132,7 @@ class ResponseAgent:
     # Public API
     # ------------------------------------------------------------------
     def get_instant_opener(self, question_type: str) -> str:
-        """
-        Get an instant opener for two-phase response.
-        Returns a speakable opener in <1ms (no API call).
-        """
+        """Get an instant opener for two-phase response (0 latency)."""
         return INSTANT_OPENERS.get(question_type, "So basically… ")
 
     async def generate(
@@ -145,21 +141,11 @@ class ResponseAgent:
         kb_chunks: list[str],
         question_type: str = "personal",
         thinking_budget: int = 0,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         """
-        Generate a streaming response with prompt caching.
-
-        The system prompt is cached server-side via cache_control.
-        After first call, subsequent calls get ~85% TTFT reduction.
-
-        Yields:
-            Response text tokens (streaming).
+        Generate a streaming response with the Gemini Async API.
+        Currently operates natively with google-genai.
         """
-        if not self.api_key:
-            logger.error("ANTHROPIC_API_KEY not set")
-            yield "[Error: API key not configured]"
-            return
-
         user_message = self._build_user_message(
             question=question,
             kb_chunks=kb_chunks,
@@ -177,52 +163,27 @@ class ResponseAgent:
 
         logger.info(
             f"Generating response: type={question_type}, "
-            f"model={MODEL}, temp={temperature}, "
-            f"cache_hits={self._cache_stats['cache_hits']}/{self._cache_stats['total_calls']}"
+            f"model={MODEL}, temp={temperature}"
         )
 
         try:
-            # System prompt with cache_control for prompt caching
-            # After first call, this is served from cache (~85% faster)
-            async with self.client.messages.stream(
-                model=MODEL,
-                max_tokens=1024,
+            config = types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
                 temperature=temperature,
-                system=[
-                    {
-                        "type": "text",
-                        "text": SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[{"role": "user", "content": user_message}],
-            ) as stream:
-                # Track cache performance from response headers
-                async for text in stream.text_stream:
-                    yield text
+                max_output_tokens=1024,
+            )
 
-                # After stream completes, check cache usage
-                response = await stream.get_final_message()
-                if response.usage:
-                    cached = getattr(response.usage, 'cache_read_input_tokens', 0)
-                    if cached and cached > 0:
-                        self._cache_stats["cache_hits"] += 1
-                        self._cache_stats["by_type"][question_type]["hits"] += 1
-                        logger.info(
-                            f"CACHE HIT ⚡ {cached} tokens from cache"
-                        )
-                    else:
-                        cache_created = getattr(
-                            response.usage, 'cache_creation_input_tokens', 0
-                        )
-                        if cache_created and cache_created > 0:
-                            logger.info(
-                                f"CACHE CREATED: {cache_created} tokens cached "
-                                f"for next requests"
-                            )
+            # Note: We must use aio for async streaming in the genai SDK
+            async for chunk in await self.client.aio.models.generate_content_stream(
+                model=MODEL,
+                contents=[user_message],
+                config=config
+            ):
+                if chunk.text:
+                    yield chunk.text
 
         except Exception as e:
-            logger.error(f"Response generation error: {e}", exc_info=True)
+            logger.error(f"Gemini Response generation error: {e}", exc_info=True)
             yield f"[Error generating response: {e}]"
 
     # ------------------------------------------------------------------
@@ -248,46 +209,6 @@ class ResponseAgent:
             f"[KNOWLEDGE BASE]:\n{kb_section}\n\n"
             f"[INTERVIEWER QUESTION]:\n{question}"
         )
-
-    # ------------------------------------------------------------------
-    # Warmup (also primes the cache)
-    # ------------------------------------------------------------------
-    async def warmup(self):
-        """
-        Pre-warm API connection AND prime the prompt cache.
-        This ensures the first real question gets a cache hit.
-        """
-        if self._warmed_up:
-            return
-
-        try:
-            logger.info("Warming up Claude API + priming prompt cache…")
-            # Use the full system prompt to prime the cache
-            response = await self.client.messages.create(
-                model=MODEL,
-                max_tokens=5,
-                system=[
-                    {
-                        "type": "text",
-                        "text": SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[{"role": "user", "content": "Hi"}],
-            )
-            self._warmed_up = True
-
-            # Check if cache was created
-            if response.usage:
-                cache_created = getattr(
-                    response.usage, 'cache_creation_input_tokens', 0
-                )
-                logger.info(
-                    f"Claude API warmup complete ✓ "
-                    f"(cache primed: {cache_created} tokens)"
-                )
-        except Exception as e:
-            logger.warning(f"Warmup failed (non-critical): {e}")
 
     # ------------------------------------------------------------------
     # Non-streaming variant (for testing)

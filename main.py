@@ -27,7 +27,7 @@ from src.transcription.openai_realtime import OpenAIRealtimeTranscriber
 from src.knowledge.retrieval import KnowledgeRetriever
 from src.knowledge.classifier import QuestionClassifier
 from src.knowledge.question_filter import QuestionFilter
-from src.response.claude_agent import ResponseAgent
+from src.response.gemini_agent import GeminiAgent
 from src.metrics import SessionMetrics, QuestionMetrics
 from src.alerting import AlertManager
 from src.prometheus import start_metrics_server, response_latency, cache_hit_rate, question_count
@@ -66,7 +66,7 @@ class PipelineState:
         self.retriever: Optional[KnowledgeRetriever] = None
         self.classifier: Optional[QuestionClassifier] = None
         self.question_filter: Optional[QuestionFilter] = None
-        self.response_agent: Optional[ResponseAgent] = None
+        self.response_agent: Optional[GeminiAgent] = None
 
         # Connected teleprompter clients
         self.ws_clients: set = set()
@@ -487,7 +487,7 @@ async def process_question(question: str):
             f"KB ready ({(t_retrieve - t_start)*1000:.0f}ms from start)"
         )
 
-        # Generate response with Claude (streaming + cached prompt) + 30s timeout restriction
+        # Generate response with Gemini 3.1 Pro (streaming) + 30s timeout restriction
         full_response = []
         try:
             async with asyncio.timeout(30):
@@ -632,8 +632,8 @@ def _stop_teleprompter():
 async def start_pipeline():
     """Initialize and start all pipeline agents."""
     logger.info("=" * 60)
-    logger.info("  INTERVIEW COPILOT v3.0 — Starting Pipeline")
-    logger.info("  Architecture: OpenAI Realtime + Claude + Qt")
+    logger.info("  INTERVIEW COPILOT v4.0 — Starting Pipeline")
+    logger.info("  Architecture: OpenAI Realtime + Gemini 3.1 Pro + Qt")
     logger.info("=" * 60)
 
     # Initialize Observability
@@ -648,7 +648,7 @@ async def start_pipeline():
     # Initialize agents
     pipeline.classifier = QuestionClassifier()
     pipeline.retriever = KnowledgeRetriever()
-    pipeline.response_agent = ResponseAgent()
+    pipeline.response_agent = GeminiAgent()
     pipeline.question_filter = QuestionFilter()
 
     # Pre-warm API connections (TLS handshake, DNS, connection pool)
