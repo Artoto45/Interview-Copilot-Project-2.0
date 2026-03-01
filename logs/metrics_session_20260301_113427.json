@@ -1,0 +1,14 @@
+{
+  "session_id": "session_20260301_113427",
+  "avg_latency_ms": 670.0742000248283,
+  "cache_hit_rate": 0.0,
+  "questions": [
+    {
+      "question_text": "Could you share a time when you had to quickly learn a new skill to succeed in a role, and how you did it?",
+      "question_type": "personal",
+      "duration_ms": 670.0742000248283,
+      "cache_hit": false,
+      "timestamp": "2026-03-01T11:34:50.474495"
+    }
+  ]
+}

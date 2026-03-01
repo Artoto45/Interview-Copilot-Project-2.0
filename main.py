@@ -31,6 +31,7 @@ from src.response.gemini_agent import GeminiAgent
 from src.metrics import SessionMetrics, QuestionMetrics
 from src.alerting import AlertManager
 from src.prometheus import start_metrics_server, response_latency, cache_hit_rate, question_count
+from src.cost_calculator import CostTracker, format_cost_for_display
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -77,6 +78,7 @@ class PipelineState:
         # Observability
         self.session_metrics: Optional[SessionMetrics] = None
         self.alert_manager: Optional[AlertManager] = None
+        self.cost_tracker: Optional[CostTracker] = None
 
 
 pipeline = PipelineState()
@@ -479,6 +481,15 @@ async def process_question(question: str):
             else:
                 logger.info(f"Retrieved {len(kb_chunks)} KB chunks (fresh)")
 
+                # Track embedding cost
+                if pipeline.cost_tracker:
+                    from src.cost_calculator import estimate_embedding_tokens
+                    emb_tokens = estimate_embedding_tokens(question)
+                    pipeline.cost_tracker.track_embedding(
+                        tokens=emb_tokens,
+                        question=question,
+                    )
+
         # Reset speculative retrieval state
         await _speculative.clear_retrieval()
 
@@ -516,6 +527,40 @@ async def process_question(question: str):
             f"Response generated: {len(response_text)} chars "
             f"(total pipeline: {total_ms:.0f}ms)"
         )
+
+        # Track generation cost
+        if pipeline.cost_tracker:
+            from src.cost_calculator import estimate_tokens
+            # Estimate tokens: system prompt + KB chunks + question + response
+            system_prompt_tokens = 1024  # Average system prompt
+            kb_tokens = sum(len(chunk) // 4 for chunk in kb_chunks) if kb_chunks else 0
+            question_tokens = estimate_tokens(question)
+            output_tokens = estimate_tokens(response_text)
+
+            total_input_tokens = system_prompt_tokens + kb_tokens + question_tokens
+
+            # Determine cache hits (simplified: check if this is a repeated type)
+            cache_write_tokens = 0
+            cache_read_tokens = 0
+            # On first call of each type, write system prompt to cache
+            # On subsequent calls, read from cache
+            if hasattr(pipeline.response_agent, '_cache_stats'):
+                type_calls = pipeline.response_agent._cache_stats.get("by_type", {}).get(classification["type"], {})
+                if type_calls.get("calls", 0) > 1:
+                    # Subsequent calls: use cache
+                    cache_read_tokens = system_prompt_tokens
+                    total_input_tokens -= system_prompt_tokens  # Cache read doesn't count as input
+                elif type_calls.get("calls", 0) == 1:
+                    # First call: write to cache
+                    cache_write_tokens = system_prompt_tokens
+
+            pipeline.cost_tracker.track_generation(
+                input_tokens=total_input_tokens,
+                output_tokens=output_tokens,
+                question=question,
+                cache_write_tokens=cache_write_tokens,
+                cache_read_tokens=cache_read_tokens,
+            )
 
         # Update Session Metrics & Prometheus
         try:
@@ -644,6 +689,7 @@ async def start_pipeline():
         questions=[]
     )
     pipeline.alert_manager = AlertManager()
+    pipeline.cost_tracker = CostTracker(session_id=session_id)
 
     # Initialize agents
     pipeline.classifier = QuestionClassifier()
@@ -737,6 +783,17 @@ async def stop_pipeline():
                 pipeline.alert_manager.check_metrics(pipeline.session_metrics)
         except Exception as e:
             logger.error(f"Error saving session metrics: {e}")
+
+    # Save cost report
+    if pipeline.cost_tracker:
+        try:
+            cost_report = pipeline.cost_tracker.get_session_report()
+            cost_report.questions_processed = pipeline.total_questions
+            cost_report.responses_generated = pipeline.total_responses
+            pipeline.cost_tracker.save_report(cost_report)
+            logger.info(f"Total Session Cost: {format_cost_for_display(cost_report.total_cost_usd)}")
+        except Exception as e:
+            logger.error(f"Error saving cost report: {e}")
 
     logger.info(
         f"Session totals: "

@@ -1,0 +1,14 @@
+{
+  "session_id": "session_20260301_115151",
+  "avg_latency_ms": 1222.064399975352,
+  "cache_hit_rate": 0.0,
+  "questions": [
+    {
+      "question_text": "Absolutely, let's reset once again. Here's a new prompt: Could you walk me through a time when you had to manage a project that didn't go as planned? How did you adapt and what was the outcome?",
+      "question_type": "hybrid",
+      "duration_ms": 1222.064399975352,
+      "cache_hit": false,
+      "timestamp": "2026-03-01T11:52:18.823168"
+    }
+  ]
+}

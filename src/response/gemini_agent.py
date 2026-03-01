@@ -19,7 +19,7 @@ logger = logging.getLogger("response.gemini")
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-MODEL = "gemini-3.1-pro-001"
+MODEL = "gemini-2.5-flash"
 
 SYSTEM_PROMPT = """\
 You are an English interview copilot. Your user is a non-native English \
