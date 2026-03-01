@@ -23,7 +23,7 @@ logger = logging.getLogger("response.claude")
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-MODEL = "claude-3-5-sonnet-20241022"  # Claude Sonnet 4 (latest, fast, high quality)
+MODEL = "claude-3-5-sonnet-20250514"  # Claude 3.5 Sonnet (May 2025, latest available)
 
 SYSTEM_PROMPT = """\
 You are an English interview copilot. Your user is a non-native English \
