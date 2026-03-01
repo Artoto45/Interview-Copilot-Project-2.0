@@ -24,10 +24,11 @@ from dotenv import load_dotenv
 
 from src.audio.capture import AudioCaptureAgent
 from src.transcription.openai_realtime import OpenAIRealtimeTranscriber
+from src.transcription.deepgram_transcriber import DeepgramTranscriber
 from src.knowledge.retrieval import KnowledgeRetriever
 from src.knowledge.classifier import QuestionClassifier
 from src.knowledge.question_filter import QuestionFilter
-from src.response.gemini_agent import GeminiAgent
+from src.response.openai_agent import OpenAIAgent
 from src.metrics import SessionMetrics, QuestionMetrics
 from src.alerting import AlertManager
 from src.prometheus import start_metrics_server, response_latency, cache_hit_rate, question_count
@@ -63,11 +64,11 @@ class PipelineState:
         # Agent instances
         self.audio_agent: Optional[AudioCaptureAgent] = None
         self.transcriber_user: Optional[OpenAIRealtimeTranscriber] = None
-        self.transcriber_int: Optional[OpenAIRealtimeTranscriber] = None
+        self.transcriber_int: Optional[DeepgramTranscriber] = None
         self.retriever: Optional[KnowledgeRetriever] = None
         self.classifier: Optional[QuestionClassifier] = None
         self.question_filter: Optional[QuestionFilter] = None
-        self.response_agent: Optional[GeminiAgent] = None
+        self.response_agent: Optional[OpenAIAgent] = None
 
         # Connected teleprompter clients
         self.ws_clients: set = set()
@@ -498,7 +499,7 @@ async def process_question(question: str):
             f"KB ready ({(t_retrieve - t_start)*1000:.0f}ms from start)"
         )
 
-        # Generate response with Gemini 3.1 Pro (streaming) + 30s timeout restriction
+        # Generate response with OpenAI GPT-4o-mini (streaming) + 30s timeout restriction
         full_response = []
         try:
             async with asyncio.timeout(30):
@@ -694,7 +695,7 @@ async def start_pipeline():
     # Initialize agents
     pipeline.classifier = QuestionClassifier()
     pipeline.retriever = KnowledgeRetriever()
-    pipeline.response_agent = GeminiAgent()
+    pipeline.response_agent = OpenAIAgent()
     pipeline.question_filter = QuestionFilter()
 
     # Pre-warm API connections (TLS handshake, DNS, connection pool)
@@ -724,7 +725,7 @@ async def start_pipeline():
 
     # Interviewer channel (system audio via Voicemeeter B1)
     if pipeline.audio_agent._stream_int is not None:
-        pipeline.transcriber_int = OpenAIRealtimeTranscriber(
+        pipeline.transcriber_int = DeepgramTranscriber(
             on_transcript=on_transcript,
             on_delta=on_delta,
             on_speech_event=on_speech_event,

@@ -1,0 +1,9 @@
+# This directory stores interview session logs
+# These are NOT committed to version control for privacy reasons
+# They contain transcripts, metrics, and cost information from interviews
+
+# Generated files (not committed):
+# - interview_YYYY-MM-DD_HH-MM.md
+# - metrics_session_*.json
+# - costs_session_*.json
+

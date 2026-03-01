@@ -1,33 +1,93 @@
-# Environment
+# ============================================================
+# SECURITY: Never commit sensitive information
+# ============================================================
+
+# Environment variables (CRITICAL: contains API keys)
 .env
+.env.local
+.env.*.local
+
+# Sensitive user data
+kb/personal/perfil_*.txt
+kb/personal/historias_*.txt
+kb/company/sample.txt
+kb/company/projection_management.txt
+
+# Generated data
+chroma_data/
+*.faiss
+*.pkl
+*.sqlite3
+
+# Logs (may contain sensitive info)
+logs/interview_*.md
+logs/metrics_session_*.json
+logs/costs_session_*.json
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+.Python
+build/
+dist/
 
 # IDE
 .idea/
 .vscode/
 *.swp
+*.swo
+*~
 
 # Virtual Environment
 venv/
 .venv/
-
-# ChromaDB / FAISS data
-chroma_data/
-*.faiss
-*.pkl
-
-# Temp files
-_read_docx.py
-_roadmap_content.txt
-*.tmp
-
-# OS
-Thumbs.db
-.DS_Store
+env/
 
 # Testing
 .pytest_cache/
 htmlcov/
 .coverage
+.coverage.*
+
+# Temp files
+_read_docx.py
+_roadmap_content.txt
+*.tmp
+*.bak
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# MacOS
+.AppleDouble
+.LSOverride
+
+# Windows
+*.lnk
+$RECYCLE.BIN/
+
+# Credentials and secrets
+*.pem
+*.key
+*.cert
+*.crt
+
+# Backups
+*.backup
+*.old
+
+# Audio/Video (large files)
+*.wav
+*.mp3
+*.mp4
+*.webm
+
+# IDE temp files
+.project
+.pydevproject
+*.sublime-project
+*.sublime-workspace
