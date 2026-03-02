@@ -43,6 +43,8 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import QFont, QKeySequence
 
+from src.teleprompter.progress_tracker import estimate_char_progress
+
 logger = logging.getLogger("teleprompter.display")
 
 # ---------------------------------------------------------------------------
@@ -86,6 +88,8 @@ class SmartTeleprompter(QWidget):
             min(OPACITY_LEVELS, key=lambda x: abs(x - opacity))
         )
         self._current_text = ""
+        self._candidate_spoken_buffer = ""
+        self._read_char_index = 0
         self._drag_position: Optional[QPoint] = None
         self._waiting = True  # True while showing the waiting message
 
@@ -220,8 +224,26 @@ class SmartTeleprompter(QWidget):
     def clear_text(self):
         """Clear the display and reset to waiting state."""
         self._current_text = ""
+        self._candidate_spoken_buffer = ""
+        self._read_char_index = 0
         self._show_waiting_message()
         self.response_cleared.emit()
+
+    def update_candidate_progress(self, spoken_text: str):
+        """Advance teleprompter according to what the candidate has spoken."""
+        if not spoken_text.strip() or self._waiting:
+            return
+
+        self._candidate_spoken_buffer = spoken_text
+        progress = estimate_char_progress(
+            script_text=self._current_text,
+            spoken_text=self._candidate_spoken_buffer,
+        )
+
+        # Monotonic cursor: never move backwards on noisy transcript updates.
+        self._read_char_index = max(self._read_char_index, progress)
+        self._render_text()
+        self._scroll_to_progress()
 
     def _show_waiting_message(self):
         """Show an initial waiting/listening message on startup."""
@@ -269,13 +291,47 @@ class SmartTeleprompter(QWidget):
         )
 
         self._current_text += token
+        self._render_text()
 
-        # Format text for display
-        formatted = self._format_display_text(self._current_text)
-        self.text_label.setText(formatted)
+        # If we don't have live speaker alignment yet, default to bottom.
+        if self._read_char_index <= 0:
+            QTimer.singleShot(10, self._scroll_to_bottom)
 
-        # Auto-scroll to bottom
-        QTimer.singleShot(10, self._scroll_to_bottom)
+    def _render_text(self):
+        """Render formatted text with read/unread visual guidance."""
+        read_chunk = self._current_text[: self._read_char_index]
+        unread_chunk = self._current_text[self._read_char_index :]
+
+        read_html = self._format_display_text(read_chunk)
+        unread_html = self._format_display_text(unread_chunk)
+
+        if self._read_char_index > 0:
+            self.status_label.setText("● FOLLOW")
+            self.status_label.setStyleSheet(
+                "color: rgba(120, 255, 180, 0.95); "
+                "font-size: 11px; font-weight: bold; "
+                "background: transparent; border: none;"
+            )
+
+        self.text_label.setText(
+            '<span style="color: rgba(140, 220, 160, 0.55);">'
+            f"{read_html}"
+            "</span>"
+            '<span style="color: rgba(255, 255, 255, 0.98);">'
+            f"{unread_html}"
+            "</span>"
+        )
+
+    def _scroll_to_progress(self):
+        """Scroll to keep current reading point in the middle of the window."""
+        scrollbar = self.scroll_area.verticalScrollBar()
+        if scrollbar.maximum() <= 0 or not self._current_text:
+            return
+
+        ratio = self._read_char_index / max(1, len(self._current_text))
+        target = int(scrollbar.maximum() * min(1.0, max(0.0, ratio)))
+        target = max(0, target - int(self.scroll_area.height() * 0.35))
+        scrollbar.setValue(target)
 
     def _scroll_to_bottom(self):
         """Scroll to the latest text."""

@@ -60,6 +60,7 @@ class TeleprompterBridge:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._candidate_live_text = ""
 
     # ------------------------------------------------------------------
     # Public API
@@ -175,6 +176,20 @@ class TeleprompterBridge:
             speaker = msg.get("speaker", "unknown")
             text = msg.get("text", "")
             logger.info(f"Transcript [{speaker}]: {text}")
+            if self.teleprompter and speaker in {"user", "candidate"}:
+                self._candidate_live_text = text
+                self.teleprompter.update_candidate_progress(
+                    self._candidate_live_text
+                )
+
+        elif msg_type == "subtitle_delta":
+            speaker = msg.get("speaker", "unknown")
+            delta = msg.get("text", "")
+            if self.teleprompter and speaker in {"user", "candidate"}:
+                self._candidate_live_text += delta
+                self.teleprompter.update_candidate_progress(
+                    self._candidate_live_text
+                )
 
         elif msg_type == "error":
             error_msg = msg.get("message", "Unknown error")

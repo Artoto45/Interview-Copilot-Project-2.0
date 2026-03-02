@@ -237,8 +237,8 @@ class DeepgramTranscriber:
             result = args[1]
         elif result is None and len(args) == 1:
             result = args[0]
-            
-        print(f"DEEPGRAM RAW RESULT: {type(result)}: {result}", flush=True)
+
+        logger.debug(f"DEEPGRAM RAW RESULT: {type(result)}: {result}")
         
         if getattr(result, "type", None) != "Results":
             return
