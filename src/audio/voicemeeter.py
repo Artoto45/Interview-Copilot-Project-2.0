@@ -14,9 +14,27 @@ import logging
 import subprocess
 from typing import Optional
 
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except (ImportError, OSError):
+    class _SoundDeviceStub:
+        """Stub to keep module importable when PortAudio is unavailable."""
+
+        @staticmethod
+        def query_devices(*args, **kwargs):
+            raise OSError("PortAudio library not found")
+
+    sd = _SoundDeviceStub()
 
 logger = logging.getLogger("audio.voicemeeter")
+
+
+def _sounddevice_available() -> bool:
+    try:
+        sd.query_devices()
+        return True
+    except Exception:
+        return False
 
 
 class VoicemeeterConfig:
@@ -49,6 +67,12 @@ class VoicemeeterConfig:
             "warnings": [],
             "recommendations": [],
         }
+
+        if not _sounddevice_available():
+            result["warnings"].append(
+                "sounddevice/PortAudio not available. Cannot inspect local audio devices."
+            )
+            return result
 
         all_devices = sd.query_devices()
         device_names = [d["name"] for d in all_devices]
@@ -144,6 +168,11 @@ class VoicemeeterConfig:
 
         # List all input devices
         print("  Available Input Devices:")
+        if not _sounddevice_available():
+            print("    (sounddevice/PortAudio not available in this environment)")
+            print("=" * 55 + "\n")
+            return
+
         devices = sd.query_devices()
         for idx, dev in enumerate(devices):
             if dev["max_input_channels"] > 0:

@@ -100,13 +100,33 @@ MIN_WORD_COUNT = 4
 # If it's clearly a question (has ?), lower the bar
 MIN_WORD_COUNT_WITH_QUESTION_MARK = 3
 
-from nltk.stem import PorterStemmer
-_stemmer = PorterStemmer()
+try:
+    from nltk.stem import PorterStemmer
+except ImportError:
+    PorterStemmer = None
+
+
+class _LightStemmer:
+    """Minimal fallback stemmer when NLTK is unavailable."""
+
+    SUFFIXES = ("ing", "ed", "ly", "es", "s")
+
+    @classmethod
+    def stem(cls, word: str) -> str:
+        token = word.lower().strip("?,.:;!")
+        for suffix in cls.SUFFIXES:
+            if len(token) > len(suffix) + 2 and token.endswith(suffix):
+                return token[: -len(suffix)]
+        return token
+
+
+_stemmer = PorterStemmer() if PorterStemmer else _LightStemmer()
+
 
 def _normalize_tokens(text: str) -> set[str]:
-    """Normalize text to stemmed tokens"""
+    """Normalize text to stemmed tokens."""
     words = text.lower().split()
-    return {_stemmer.stem(w.strip('?,.:;!')) for w in words if w}
+    return {_stemmer.stem(w.strip("?,.:;!")) for w in words if w}
 
 def has_interview_signal_fuzzy(question: str, threshold: float = 0.70) -> bool:
     """Check for interview signals using fuzzy matching
