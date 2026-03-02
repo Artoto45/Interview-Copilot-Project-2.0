@@ -18,7 +18,17 @@ import os
 from typing import Optional
 
 import numpy as np
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except (ImportError, OSError):
+    class _SoundDeviceStub:
+        """Stub to keep module importable when PortAudio is unavailable."""
+
+        @staticmethod
+        def query_devices(*args, **kwargs):
+            raise OSError("PortAudio library not found")
+
+    sd = _SoundDeviceStub()
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -31,6 +41,14 @@ DEFAULT_SAMPLE_RATE = int(os.getenv("AUDIO_SAMPLE_RATE", "16000"))
 DEFAULT_CHUNK_MS = int(os.getenv("AUDIO_CHUNK_MS", "100"))
 DTYPE = "int16"
 CHANNELS = 1
+
+
+def _sounddevice_available() -> bool:
+    try:
+        sd.query_devices()
+        return True
+    except Exception:
+        return False
 
 
 class AudioCaptureAgent:
@@ -101,7 +119,7 @@ class AudioCaptureAgent:
         Resolve a device name (e.g., 'VoiceMeeter Out B1') to its
         integer index in ``sounddevice``.  Returns ``None`` if not found.
         """
-        if name is None:
+        if name is None or not _sounddevice_available():
             return None
 
         devices = sd.query_devices()
@@ -153,6 +171,13 @@ class AudioCaptureAgent:
             return
 
         logger.info("Starting audio capture…")
+
+        if not _sounddevice_available():
+            logger.error(
+                "sounddevice/PortAudio not available. "
+                "Audio capture cannot be started in this environment."
+            )
+            return
 
         # Resolve devices
         user_dev = self._resolve_device(self.device_user)
@@ -341,7 +366,10 @@ class AudioCaptureAgent:
     @staticmethod
     def list_available_devices() -> list[dict]:
         """List all available input audio devices."""
-        devices = sd.query_devices()
+        try:
+            devices = sd.query_devices()
+        except Exception:
+            return []
         return [
             {
                 "index": idx,
@@ -352,3 +380,5 @@ class AudioCaptureAgent:
             for idx, dev in enumerate(devices)
             if dev["max_input_channels"] > 0
         ]
+        if sd is None:
+            return None
