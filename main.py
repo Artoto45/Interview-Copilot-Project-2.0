@@ -12,7 +12,6 @@ lightweight local WebSocket server (websockets library only).
 import asyncio
 import json
 import logging
-import os
 import subprocess
 import sys
 from datetime import datetime
@@ -20,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 import websockets
+from websockets.asyncio.server import ServerConnection
 from dotenv import load_dotenv
 
 from src.audio.capture import AudioCaptureAgent
@@ -90,16 +90,19 @@ pipeline = PipelineState()
 # ---------------------------------------------------------------------------
 async def broadcast_message(message: dict):
     """Send a JSON message to all connected teleprompter clients."""
-    if not pipeline.ws_clients:
-        return
-    data = json.dumps(message, ensure_ascii=False)
-    disconnected = set()
-    for ws in pipeline.ws_clients:
-        try:
-            await ws.send(data)
-        except Exception:
-            disconnected.add(ws)
-    pipeline.ws_clients -= disconnected
+    try:
+        if not pipeline.ws_clients:
+            return
+        data = json.dumps(message, ensure_ascii=False)
+        disconnected = set()
+        for ws in list(pipeline.ws_clients):
+            try:
+                await ws.send(data)
+            except Exception:
+                disconnected.add(ws)
+        pipeline.ws_clients -= disconnected
+    except Exception as e:
+        logger.warning(f"WebSocket broadcast error suppressed: {e}")
 
 
 async def broadcast_token(token: str):
@@ -107,7 +110,7 @@ async def broadcast_token(token: str):
     await broadcast_message({"type": "token", "data": token})
 
 
-async def ws_handler(websocket):
+async def ws_handler(websocket: ServerConnection):
     """Handle a teleprompter WebSocket connection."""
     pipeline.ws_clients.add(websocket)
     logger.info(
@@ -333,14 +336,14 @@ async def is_similar_enough_semantic(delta: str, final: str) -> tuple[bool, floa
             input=[delta, final]
         )
         
-        delta_emb = np.array(embeddings.data[0].embedding)
-        final_emb = np.array(embeddings.data[1].embedding)
-        
+        delta_emb = np.array(embeddings.data[0].embedding, dtype=np.float32)
+        final_emb = np.array(embeddings.data[1].embedding, dtype=np.float32)
+
         # Cosine similarity
-        similarity = np.dot(delta_emb, final_emb) / (
-            np.linalg.norm(delta_emb) * np.linalg.norm(final_emb)
-        )
-        
+        dot_product = float(np.dot(delta_emb, final_emb))
+        norm_product = float(np.linalg.norm(delta_emb)) * float(np.linalg.norm(final_emb))
+        similarity = float(dot_product / norm_product)
+
         is_similar = similarity > 0.80
         logger.info(f"Semantic similarity: {similarity:.3f} → {'ACCEPT' if is_similar else 'REJECT'}")
         
@@ -679,7 +682,7 @@ async def start_pipeline():
     """Initialize and start all pipeline agents."""
     logger.info("=" * 60)
     logger.info("  INTERVIEW COPILOT v4.0 — Starting Pipeline")
-    logger.info("  Architecture: OpenAI Realtime + Gemini 3.1 Pro + Qt")
+    logger.info("  Architecture: OpenAI Realtime + gpt-4o-mini + Qt")
     logger.info("=" * 60)
 
     # Initialize Observability

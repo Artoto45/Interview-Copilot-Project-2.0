@@ -201,6 +201,16 @@ class QuestionFilter:
             self._accept("has_question_mark", cleaned)
             return True
 
+        # --- Check 4.5: Reject empathy/active listening statements ---
+        empathy_patterns = [
+            "i understand", "that must have been", "that sounds", 
+            "that makes sense", "i hear you", "i see", "got it"
+        ]
+        if not has_question_mark:
+            if any(text_lower.startswith(p) for p in empathy_patterns):
+                self._reject("empathy_statement", cleaned)
+                return False
+
         # --- Check 5: Long enough statement (might be a prompt) ---
         # "Tell me about your experience at X" doesn't have a ?
         if word_count >= 6:
