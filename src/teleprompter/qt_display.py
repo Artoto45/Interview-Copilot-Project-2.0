@@ -71,6 +71,8 @@ class SmartTeleprompter(QWidget):
     """
 
     text_received = pyqtSignal(str)
+    clear_requested = pyqtSignal()
+    candidate_progress_received = pyqtSignal(str)
     response_cleared = pyqtSignal()
 
     def __init__(
@@ -99,6 +101,10 @@ class SmartTeleprompter(QWidget):
 
         # Connect signal for thread-safe text updates
         self.text_received.connect(self._on_text_received)
+        self.clear_requested.connect(self._on_clear_requested)
+        self.candidate_progress_received.connect(
+            self._on_candidate_progress_received
+        )
 
         # Show initial waiting message
         self._show_waiting_message()
@@ -222,15 +228,25 @@ class SmartTeleprompter(QWidget):
         self.text_received.emit(token)
 
     def clear_text(self):
-        """Clear the display and reset to waiting state."""
+        """Thread-safe clear request (can be called from any thread)."""
+        self.clear_requested.emit()
+
+    def update_candidate_progress(self, spoken_text: str):
+        """Thread-safe progress update (can be called from any thread)."""
+        self.candidate_progress_received.emit(spoken_text)
+
+    @pyqtSlot()
+    def _on_clear_requested(self):
+        """Clear display in the Qt GUI thread."""
         self._current_text = ""
         self._candidate_spoken_buffer = ""
         self._read_char_index = 0
         self._show_waiting_message()
         self.response_cleared.emit()
 
-    def update_candidate_progress(self, spoken_text: str):
-        """Advance teleprompter according to what the candidate has spoken."""
+    @pyqtSlot(str)
+    def _on_candidate_progress_received(self, spoken_text: str):
+        """Advance teleprompter according to what candidate has spoken."""
         if not spoken_text.strip() or self._waiting:
             return
 
