@@ -191,15 +191,17 @@ class TeleprompterBridge:
 
         elif msg_type == "subtitle_delta":
             speaker = msg.get("speaker", "unknown")
-            delta = msg.get("text", "")
-            if self.teleprompter and speaker in {"user", "candidate"}:
-                self._candidate_live_text += delta
+            delta = (msg.get("text", "") or "").strip()
+            if self.teleprompter and speaker in {"user", "candidate"} and delta:
+                # Keep only the latest partial transcript. Deltas are full
+                # partial hypotheses, not append-only token streams.
+                self._candidate_live_text = delta
                 current_full = self._candidate_committed_text
                 if current_full:
-                    current_full += " " + self._candidate_live_text.strip()
+                    current_full += " " + self._candidate_live_text
                 else:
-                    current_full = self._candidate_live_text.strip()
-                    
+                    current_full = self._candidate_live_text
+
                 self.teleprompter.update_candidate_progress(current_full)
 
         elif msg_type == "error":

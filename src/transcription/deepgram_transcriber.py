@@ -219,15 +219,14 @@ class DeepgramTranscriber:
         if not self._speech_active:
             self._speech_active = True
             logger.info(f"[{self._speaker}] Speech started")
-            if self.on_speech_event:
-                # We offload the async callback firing to the event loop safely
-                # Because deepgram-sdk invokes this synchronously
-                try:
-                    # In python 3.10+, get_running_loop works perfectly
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(self.on_speech_event(self._speaker, "speech_started"))
-                except RuntimeError:
-                    pass
+            if self.on_speech_event and self._main_loop:
+                # Deepgram invokes callbacks from a background thread.
+                # Dispatch on the coordinator loop to preserve thread safety
+                # and keep event names aligned with OpenAIRealtimeTranscriber.
+                asyncio.run_coroutine_threadsafe(
+                    self.on_speech_event(self._speaker, "started"),
+                    self._main_loop,
+                )
 
     def _on_message(self, *args, **kwargs):
         """Callback from Deepgram with transcript data."""
