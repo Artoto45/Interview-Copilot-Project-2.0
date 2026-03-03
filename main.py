@@ -81,6 +81,9 @@ class PipelineState:
         self.alert_manager: Optional[AlertManager] = None
         self.cost_tracker: Optional[CostTracker] = None
 
+        # Concurrency control
+        self.active_generation_task: Optional[asyncio.Task] = None
+
 
 pipeline = PipelineState()
 
@@ -227,7 +230,14 @@ async def on_transcript(speaker: str, text: str):
         # --- INTERVIEWER: evaluate and potentially trigger RAG ---
         if pipeline.question_filter.is_interview_question(text):
             pipeline.total_questions += 1
-            await process_question(text)
+            
+            # Cancel any previous question processing task
+            if pipeline.active_generation_task and not pipeline.active_generation_task.done():
+                logger.info("Interrupting previous generation for new question.")
+                pipeline.active_generation_task.cancel()
+                
+            # Start answering the new question
+            pipeline.active_generation_task = asyncio.create_task(process_question(text))
         else:
             logger.info(f"Interviewer noise skipped: {text[:60]}…")
 

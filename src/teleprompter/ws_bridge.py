@@ -60,6 +60,7 @@ class TeleprompterBridge:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._candidate_committed_text = ""
         self._candidate_live_text = ""
 
     # ------------------------------------------------------------------
@@ -169,6 +170,8 @@ class TeleprompterBridge:
 
         elif msg_type == "new_question":
             # Clear previous response when a new question arrives
+            self._candidate_committed_text = ""
+            self._candidate_live_text = ""
             if self.teleprompter:
                 self.teleprompter.clear_text()
 
@@ -177,9 +180,13 @@ class TeleprompterBridge:
             text = msg.get("text", "")
             logger.info(f"Transcript [{speaker}]: {text}")
             if self.teleprompter and speaker in {"user", "candidate"}:
-                self._candidate_live_text = text
+                if self._candidate_committed_text:
+                    self._candidate_committed_text += " " + text
+                else:
+                    self._candidate_committed_text = text
+                self._candidate_live_text = ""
                 self.teleprompter.update_candidate_progress(
-                    self._candidate_live_text
+                    self._candidate_committed_text
                 )
 
         elif msg_type == "subtitle_delta":
@@ -187,9 +194,13 @@ class TeleprompterBridge:
             delta = msg.get("text", "")
             if self.teleprompter and speaker in {"user", "candidate"}:
                 self._candidate_live_text += delta
-                self.teleprompter.update_candidate_progress(
-                    self._candidate_live_text
-                )
+                current_full = self._candidate_committed_text
+                if current_full:
+                    current_full += " " + self._candidate_live_text.strip()
+                else:
+                    current_full = self._candidate_live_text.strip()
+                    
+                self.teleprompter.update_candidate_progress(current_full)
 
         elif msg_type == "error":
             error_msg = msg.get("message", "Unknown error")

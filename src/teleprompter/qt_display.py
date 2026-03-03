@@ -5,9 +5,8 @@ Frameless, always-on-top, semi-transparent window that displays
 interview responses streaming token-by-token.
 
 Features:
-    - Adjustable opacity (70–85% for camera visibility)
-    - WPM speed control (80–150 WPM, default 130)
-    - Auto-scroll following new text
+    - Adaptive Auto-scroll based on candidate voice tracking
+    - Adjustable background opacity (70–85% for camera visibility)
     - Visual parsing of [PAUSE] and **emphasis** markers
     - Font size adjustable (default 28px)
     - Keyboard shortcuts for quick control
@@ -15,8 +14,7 @@ Features:
 
 Keyboard shortcuts:
     Ctrl+↑ / Ctrl+↓  — Increase / decrease font size
-    Ctrl+← / Ctrl+→  — Slower / faster WPM
-    Ctrl+O            — Cycle opacity (70% → 80% → 90% → 70%)
+    Ctrl+O            — Cycle background opacity
     Ctrl+C / Escape    — Clear text and reset
     Ctrl+Q             — Quit teleprompter
 """
@@ -27,12 +25,12 @@ from typing import Optional
 
 from PyQt5.QtWidgets import (
     QApplication,
-    QLabel,
-    QScrollArea,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
     QHBoxLayout,
-    QPushButton,
+    QLabel,
+    QGraphicsDropShadowEffect,
 )
 from PyQt5.QtCore import (
     Qt,
@@ -40,8 +38,10 @@ from PyQt5.QtCore import (
     pyqtSignal,
     pyqtSlot,
     QPoint,
+    QPropertyAnimation,
+    QEasingCurve,
 )
-from PyQt5.QtGui import QFont, QKeySequence
+from PyQt5.QtGui import QFont, QKeySequence, QColor, QTextCursor, QTextCharFormat, QBrush
 
 from src.teleprompter.progress_tracker import estimate_char_progress
 
@@ -50,7 +50,6 @@ logger = logging.getLogger("teleprompter.display")
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-DEFAULT_WPM = 130
 DEFAULT_OPACITY = 0.80
 DEFAULT_FONT_SIZE = 28
 MIN_FONT_SIZE = 16
@@ -71,17 +70,17 @@ class SmartTeleprompter(QWidget):
     """
 
     text_received = pyqtSignal(str)
+    clear_requested = pyqtSignal()
+    candidate_progress_received = pyqtSignal(str)
     response_cleared = pyqtSignal()
 
     def __init__(
         self,
-        wpm: int = DEFAULT_WPM,
         opacity: float = DEFAULT_OPACITY,
         font_size: int = DEFAULT_FONT_SIZE,
     ):
         super().__init__()
 
-        self.wpm = wpm
         self.opacity_level = opacity
         self.current_font_size = font_size
         self._opacity_index = OPACITY_LEVELS.index(
@@ -92,6 +91,8 @@ class SmartTeleprompter(QWidget):
         self._read_char_index = 0
         self._drag_position: Optional[QPoint] = None
         self._waiting = True  # True while showing the waiting message
+        
+        self._scroll_animation: Optional[QPropertyAnimation] = None
 
         self._setup_window()
         self._setup_ui()
@@ -99,6 +100,10 @@ class SmartTeleprompter(QWidget):
 
         # Connect signal for thread-safe text updates
         self.text_received.connect(self._on_text_received)
+        self.clear_requested.connect(self._on_clear_requested)
+        self.candidate_progress_received.connect(
+            self._on_candidate_progress_received
+        )
 
         # Show initial waiting message
         self._show_waiting_message()
@@ -126,15 +131,8 @@ class SmartTeleprompter(QWidget):
             y = geo.height() - self.height() - 50
             self.move(x, y)
 
-        self.setWindowOpacity(self.opacity_level)
-
-    def _setup_ui(self):
-        """Build the teleprompter UI."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        # Main container with styled background
-        self.container = QWidget()
+    def _update_opacity(self):
+        """Update the background opacity of the main container."""
         self.container.setStyleSheet(
             f"""
             QWidget {{
@@ -144,6 +142,16 @@ class SmartTeleprompter(QWidget):
             }}
             """
         )
+
+    def _setup_ui(self):
+        """Build the teleprompter UI."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Main container with styled background
+        self.container = QWidget()
+        self._update_opacity()
+
         container_layout = QVBoxLayout(self.container)
         container_layout.setContentsMargins(20, 15, 20, 15)
 
@@ -157,52 +165,45 @@ class SmartTeleprompter(QWidget):
             "background: transparent; "
             "border: none;"
         )
-        self.wpm_label = QLabel(f"WPM: {self.wpm}")
-        self.wpm_label.setStyleSheet(
-            "color: rgba(180, 180, 220, 0.8); "
+        self.sync_mode_label = QLabel("🎤 VOICE SYNC: ACTIVE")
+        self.sync_mode_label.setStyleSheet(
+            "color: rgba(180, 220, 255, 0.85); "
             "font-size: 11px; "
+            "font-weight: bold; "
             "background: transparent; "
             "border: none;"
         )
         status_bar.addWidget(self.status_label)
         status_bar.addStretch()
-        status_bar.addWidget(self.wpm_label)
+        status_bar.addWidget(self.sync_mode_label)
         container_layout.addLayout(status_bar)
 
-        # Scroll area for text
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarAlwaysOff
-        )
-        self.scroll_area.setVerticalScrollBarPolicy(
-            Qt.ScrollBarAlwaysOff
-        )
-        self.scroll_area.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }"
-        )
-
-        # Text label
-        self.text_label = QLabel("")
-        self.text_label.setWordWrap(True)
-        self.text_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        self.text_label.setStyleSheet(
+        # Text Editor (replaces QLabel + QScrollArea)
+        self.text_edit = QTextEdit()
+        self.text_edit.setReadOnly(True)
+        self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
+        self.text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.text_edit.setStyleSheet(
             f"""
-            QLabel {{
+            QTextEdit {{
                 color: rgba(255, 255, 255, 0.95);
                 font-size: {self.current_font_size}px;
                 font-family: 'Segoe UI', 'Inter', 'Roboto', sans-serif;
-                line-height: 1.5;
-                padding: 8px;
                 background: transparent;
                 border: none;
             }}
             """
         )
-        self.text_label.setTextFormat(Qt.RichText)
 
-        self.scroll_area.setWidget(self.text_label)
-        container_layout.addWidget(self.scroll_area)
+        # Add subtle shadow for maximum contrast
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(8)
+        shadow.setColor(QColor(0, 0, 0, 200))
+        shadow.setOffset(2, 2)
+        self.text_edit.setGraphicsEffect(shadow)
+
+        container_layout.addWidget(self.text_edit)
 
         layout.addWidget(self.container)
 
@@ -222,15 +223,25 @@ class SmartTeleprompter(QWidget):
         self.text_received.emit(token)
 
     def clear_text(self):
-        """Clear the display and reset to waiting state."""
+        """Thread-safe clear request (can be called from any thread)."""
+        self.clear_requested.emit()
+
+    def update_candidate_progress(self, spoken_text: str):
+        """Thread-safe progress update (can be called from any thread)."""
+        self.candidate_progress_received.emit(spoken_text)
+
+    @pyqtSlot()
+    def _on_clear_requested(self):
+        """Clear display in the Qt GUI thread."""
         self._current_text = ""
         self._candidate_spoken_buffer = ""
         self._read_char_index = 0
         self._show_waiting_message()
         self.response_cleared.emit()
 
-    def update_candidate_progress(self, spoken_text: str):
-        """Advance teleprompter according to what the candidate has spoken."""
+    @pyqtSlot(str)
+    def _on_candidate_progress_received(self, spoken_text: str):
+        """Advance teleprompter according to what candidate has spoken."""
         if not spoken_text.strip() or self._waiting:
             return
 
@@ -238,6 +249,7 @@ class SmartTeleprompter(QWidget):
         progress = estimate_char_progress(
             script_text=self._current_text,
             spoken_text=self._candidate_spoken_buffer,
+            current_progress=self._read_char_index
         )
 
         # Monotonic cursor: never move backwards on noisy transcript updates.
@@ -264,13 +276,8 @@ class SmartTeleprompter(QWidget):
             'El copiloto se activará cuando detecte una pregunta'
             '</span></div>'
         )
-        self.text_label.setText(waiting_html)
+        self.text_edit.setHtml(waiting_html)
         self._waiting = True
-
-    def set_wpm(self, wpm: int):
-        """Adjust words-per-minute reading speed."""
-        self.wpm = max(60, min(200, wpm))
-        self.wpm_label.setText(f"WPM: {self.wpm}")
 
     # ------------------------------------------------------------------
     # Slots
@@ -293,18 +300,59 @@ class SmartTeleprompter(QWidget):
         self._current_text += token
         self._render_text()
 
-        # If we don't have live speaker alignment yet, default to bottom.
+        # If we don't have live speaker alignment yet, anchor to the top so user can start reading.
         if self._read_char_index <= 0:
-            QTimer.singleShot(10, self._scroll_to_bottom)
+            QTimer.singleShot(10, self._scroll_to_top)
 
     def _render_text(self):
-        """Render formatted text with read/unread visual guidance."""
-        read_chunk = self._current_text[: self._read_char_index]
-        unread_chunk = self._current_text[self._read_char_index :]
+        """Render formatted text with read/unread visual guidance using QTextCharFormat."""
+        # Ensure plain text is set (preserves character indices exactly)
+        # Qt normalizes line endings internally. We must normalize both sides to prevent an infinite setPlainText loop!
+        editor_text = self.text_edit.toPlainText().replace('\u2029', '\n').replace('\r\n', '\n')
+        script_text = self._current_text.replace('\r\n', '\n')
+        
+        if editor_text != script_text:
+            self.text_edit.setPlainText(self._current_text)
 
-        read_html = self._format_display_text(read_chunk)
-        unread_html = self._format_display_text(unread_chunk)
+        document = self.text_edit.document()
+        cursor = QTextCursor(document)
+        
+        # Base format (Read text is faded 40%)
+        read_fmt = QTextCharFormat()
+        read_fmt.setForeground(QBrush(QColor(150, 160, 170, 100)))
+        
+        # Focus Window format (Active ~150 chars are bright)
+        focus_fmt = QTextCharFormat()
+        focus_fmt.setForeground(QBrush(QColor(255, 255, 255, 255)))
+        
+        # Distant Window format (Upcoming text is faded 60%)
+        distant_fmt = QTextCharFormat()
+        distant_fmt.setForeground(QBrush(QColor(200, 200, 210, 150)))
 
+        # Define boundary indices
+        FOCUS_WINDOW_CHARS = 150
+        focus_start = min(self._read_char_index, len(self._current_text))
+        distant_start = min(focus_start + FOCUS_WINDOW_CHARS, len(self._current_text))
+        end_idx = len(self._current_text)
+
+        # Apply Read formatting [0 to focus_start]
+        if focus_start > 0:
+            cursor.setPosition(0)
+            cursor.setPosition(focus_start, QTextCursor.KeepAnchor)
+            cursor.setCharFormat(read_fmt)
+
+        # Apply Focus formatting [focus_start to distant_start]
+        if distant_start > focus_start:
+            cursor.setPosition(focus_start)
+            cursor.setPosition(distant_start, QTextCursor.KeepAnchor)
+            cursor.setCharFormat(focus_fmt)
+
+        # Apply Distant formatting [distant_start to end]
+        if end_idx > distant_start:
+            cursor.setPosition(distant_start)
+            cursor.setPosition(end_idx, QTextCursor.KeepAnchor)
+            cursor.setCharFormat(distant_fmt)
+            
         if self._read_char_index > 0:
             self.status_label.setText("● FOLLOW")
             self.status_label.setStyleSheet(
@@ -313,30 +361,57 @@ class SmartTeleprompter(QWidget):
                 "background: transparent; border: none;"
             )
 
-        self.text_label.setText(
-            '<span style="color: rgba(140, 220, 160, 0.55);">'
-            f"{read_html}"
-            "</span>"
-            '<span style="color: rgba(255, 255, 255, 0.98);">'
-            f"{unread_html}"
-            "</span>"
-        )
-
     def _scroll_to_progress(self):
-        """Scroll to keep current reading point in the middle of the window."""
-        scrollbar = self.scroll_area.verticalScrollBar()
-        if scrollbar.maximum() <= 0 or not self._current_text:
-            return
+        """Smoothly scroll to keep current reading point at the top of the window."""
+        try:
+            scrollbar = self.text_edit.verticalScrollBar()
+            if not self._current_text:
+                return
 
-        ratio = self._read_char_index / max(1, len(self._current_text))
-        target = int(scrollbar.maximum() * min(1.0, max(0.0, ratio)))
-        target = max(0, target - int(self.scroll_area.height() * 0.35))
-        scrollbar.setValue(target)
+            # Instantiate a logic cursor pointing exactly at the read index
+            cursor = QTextCursor(self.text_edit.document())
+            cursor.setPosition(min(self._read_char_index, len(self._current_text)))
+            
+            # Find the cursor's rectangle geometry relative to the viewport
+            cursor_rect = self.text_edit.cursorRect(cursor)
+            
+            # Calculate absolute Y in the document
+            current_scroll = scrollbar.value()
+            absolute_y = current_scroll + cursor_rect.y()
+            
+            # Target scroll calculation (adding padding of 30px so it's not glued to the top edge)
+            target = max(0, int(absolute_y) - 30)
+            target = min(scrollbar.maximum(), target)
+            
+            print(f"DEBUG SCROLL: max={scrollbar.maximum()}, rect_y={cursor_rect.y()}, cur_scroll={current_scroll}, abs_y={absolute_y}, target={target}")
+            
+            # Animate the scrollbar
+            self._animate_scroll(scrollbar, target, duration_ms=450)
+            
+        except Exception as e:
+            logger.error(f"Error in _scroll_to_progress: {e}", exc_info=True)
+
+    def _animate_scroll(self, scrollbar, target_value: int, duration_ms: int = 400):
+        """Execute a smooth kinetic 'easing' animation on the scrollbar."""
+        if self._scroll_animation and self._scroll_animation.state() == QPropertyAnimation.Running:
+            self._scroll_animation.stop()
+            
+        self._scroll_animation = QPropertyAnimation(scrollbar, b"value")
+        self._scroll_animation.setDuration(duration_ms)
+        self._scroll_animation.setStartValue(scrollbar.value())
+        self._scroll_animation.setEndValue(target_value)
+        self._scroll_animation.setEasingCurve(QEasingCurve.OutCubic)
+        self._scroll_animation.start()
 
     def _scroll_to_bottom(self):
-        """Scroll to the latest text."""
-        scrollbar = self.scroll_area.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        """Smooth scroll to the latest text."""
+        scrollbar = self.text_edit.verticalScrollBar()
+        self._animate_scroll(scrollbar, scrollbar.maximum(), duration_ms=300)
+
+    def _scroll_to_top(self):
+        """Smooth scroll to the beginning of the text."""
+        scrollbar = self.text_edit.verticalScrollBar()
+        self._animate_scroll(scrollbar, 0, duration_ms=400)
 
     # ------------------------------------------------------------------
     # Text Formatting
@@ -416,19 +491,13 @@ class SmartTeleprompter(QWidget):
                     self.current_font_size - 2, MIN_FONT_SIZE
                 )
                 self._update_font_size()
-            elif key == Qt.Key_Right:
-                # Faster WPM
-                self.set_wpm(self.wpm + 10)
-            elif key == Qt.Key_Left:
-                # Slower WPM
-                self.set_wpm(self.wpm - 10)
             elif key == Qt.Key_O:
                 # Cycle opacity
                 self._opacity_index = (
                     (self._opacity_index + 1) % len(OPACITY_LEVELS)
                 )
                 self.opacity_level = OPACITY_LEVELS[self._opacity_index]
-                self.setWindowOpacity(self.opacity_level)
+                self._update_opacity()
             elif key == Qt.Key_Q:
                 self.close()
 
@@ -436,15 +505,13 @@ class SmartTeleprompter(QWidget):
             self.clear_text()
 
     def _update_font_size(self):
-        """Update the text label font size."""
-        self.text_label.setStyleSheet(
+        """Update the text editor font size."""
+        self.text_edit.setStyleSheet(
             f"""
-            QLabel {{
+            QTextEdit {{
                 color: rgba(255, 255, 255, 0.95);
                 font-size: {self.current_font_size}px;
                 font-family: 'Segoe UI', 'Inter', 'Roboto', sans-serif;
-                line-height: 1.5;
-                padding: 8px;
                 background: transparent;
                 border: none;
             }}
@@ -456,7 +523,6 @@ class SmartTeleprompter(QWidget):
 # Standalone Launch
 # ---------------------------------------------------------------------------
 def launch_teleprompter(
-    wpm: int = DEFAULT_WPM,
     opacity: float = DEFAULT_OPACITY,
     font_size: int = DEFAULT_FONT_SIZE,
 ) -> tuple[QApplication, SmartTeleprompter]:
@@ -466,7 +532,7 @@ def launch_teleprompter(
     Returns (app, teleprompter) tuple for external control.
     """
     app = QApplication.instance() or QApplication(sys.argv)
-    tp = SmartTeleprompter(wpm=wpm, opacity=opacity, font_size=font_size)
+    tp = SmartTeleprompter(opacity=opacity, font_size=font_size)
     tp.show()
     return app, tp
 
