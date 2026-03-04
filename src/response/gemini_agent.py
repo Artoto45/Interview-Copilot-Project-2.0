@@ -91,7 +91,11 @@ class GeminiAgent:
         key = api_key or os.getenv("GOOGLE_API_KEY")
         if not key:
             logger.warning("GOOGLE_API_KEY is not set. Gemini API will fail.")
-            
+
+        self.pricing_model = "gemini_flash"
+        self.supports_prompt_cache = False
+        self.system_prompt_token_estimate = 1024
+
         self.client = genai.Client(api_key=key)
         self._warmed_up = False
         
@@ -141,6 +145,10 @@ class GeminiAgent:
         kb_chunks: list[str],
         question_type: str = "personal",
         thinking_budget: int = 0,
+        recent_questions: Optional[list[str]] = None,
+        recent_responses: Optional[list[str]] = None,
+        recent_question_types: Optional[list[str]] = None,
+        memory_context: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Generate a streaming response with the Gemini Async API.
@@ -150,6 +158,7 @@ class GeminiAgent:
             question=question,
             kb_chunks=kb_chunks,
             question_type=question_type,
+            memory_context=memory_context,
         )
 
         temperature = TEMPERATURE_MAP.get(question_type, 0.3)
@@ -194,6 +203,7 @@ class GeminiAgent:
         question: str,
         kb_chunks: list[str],
         question_type: str,
+        memory_context: Optional[str] = None,
     ) -> str:
         """Build the user message with KB context."""
         length = LENGTH_GUIDE.get(question_type, "3–4 sentences")
@@ -206,6 +216,7 @@ class GeminiAgent:
         return (
             f"[QUESTION TYPE]: {question_type}\n"
             f"[LENGTH]: {length}\n\n"
+            f"{memory_context or '[INTERVIEW MEMORY]\\n[none]'}\n\n"
             f"[KNOWLEDGE BASE]:\n{kb_section}\n\n"
             f"[INTERVIEWER QUESTION]:\n{question}"
         )

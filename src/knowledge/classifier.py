@@ -19,6 +19,7 @@ Target latency: < 200 ms.
 import json
 import logging
 import os
+import re
 from typing import Optional
 
 import anthropic
@@ -130,38 +131,68 @@ class QuestionClassifier:
     # ------------------------------------------------------------------
     @staticmethod
     def _is_compound_question(question: str) -> bool:
-        """Detect multi-part questions with improved logic"""
+        """Detect multi-part questions with clause-level intent cues."""
         q = question.lower().strip()
-        
+
         # 1. Multiple question marks
         if q.count("?") > 1:
             return True
-        
-        # 2. Connectors with multiple clauses
-        import re
-        connectors = r'\s+(and|or|plus|also|as well as|in addition|furthermore|additionally)\s+'
-        parts = re.split(connectors, q)
-        
-        if len(parts) >= 3:
-            # Check if at least 2 parts contain question-like content
-            question_count = sum(
-                1 for p in parts 
-                if '?' in p or p.strip().endswith(('?', 'do', 'does', 'did'))
-            )
-            if question_count >= 2:
-                return True
-        
-        # 3. Parenthetical questions
+
+        # 2. Parenthetical questions
         if "(" in q and "?" in q.split("(")[1]:
             return True
-        
-        # 4. Semicolon separation
+
+        # 3. Semicolon separation
         if ";" in q:
             parts = q.split(";")
             question_count = sum(1 for p in parts if "?" in p)
             if question_count >= 2:
                 return True
-        
+
+        # 4. Connector-based clause splitting.
+        clauses = [
+            part.strip(" ,.;")
+            for part in re.split(
+                r"\b(?:and|or|but|while|plus|also|as well as|in addition)\b",
+                q,
+            )
+            if part.strip()
+        ]
+        if len(clauses) >= 2:
+            intent_cues = [
+                "how ",
+                "what ",
+                "why ",
+                "when ",
+                "where ",
+                "which ",
+                "who ",
+                "can you",
+                "could you",
+                "would you",
+                "do you",
+                "did you",
+                "are you",
+                "should we",
+                "tell me",
+                "walk me through",
+                "describe",
+                "explain",
+            ]
+            clause_hits = sum(
+                1 for clause in clauses
+                if any(cue in clause for cue in intent_cues)
+            )
+            if clause_hits >= 2:
+                return True
+
+        # 5. Explicit dual-intent pattern in one sentence.
+        if re.search(
+            r"\b(and|but)\s+(how|why|what|when|where|which|who|would|could|can|do|are)\b",
+            q,
+        ):
+            return True
+
         return False
 
     @staticmethod
@@ -171,26 +202,54 @@ class QuestionClassifier:
         is unavailable or fails.
         """
         q = question.lower().strip()
-
-        # --- Check compound FIRST (multiple question marks or 'and') ---
         is_compound = QuestionClassifier._is_compound_question(q)
-        if is_compound:
-            return {
-                "type": "hybrid",
-                "compound": True,
-                "budget": BUDGET_MAP["hybrid"],
-            }
 
-        # Situational / Hypothetical
+        # Simple logistics and direct availability/compensation prompts.
+        simple_signals = [
+            "how soon could you start",
+            "are you comfortable",
+            "salary range",
+            "salary expectations",
+            "compensation",
+            "notice period",
+            "start date",
+            "availability",
+            "available to start",
+            "weekend support",
+            "hybrid schedule",
+            "do you need to provide notice",
+            "do you have any questions for me",
+            "any questions for me",
+            "are you open to",
+        ]
+
+        # Situational / Hypothetical / behavioral follow-ups.
         situational_signals = [
             "what would you do",
             "how would you handle",
+            "how did you",
+            "how do you ensure",
             "imagine",
             "scenario",
             "if you were",
             "describe a time",
+            "can you describe a situation",
             "give me an example",
             "tell me about a situation",
+            "walk me through a time",
+            "challenging period",
+            "challenging situation",
+            "difficult period",
+            "what tactics",
+            "tactics you used",
+            "how you managed",
+            "how you handled",
+            "under pressure",
+            "de-escalate",
+            "what was the hardest part",
+            "what changed after",
+            "how did you measure success",
+            "what would you do differently",
         ]
         if any(signal in q for signal in situational_signals):
             return {
@@ -209,13 +268,17 @@ class QuestionClassifier:
             "our mission",
             "our values",
             "culture",
+            "this role align",
+            "our team",
+            "our product",
+            "your mission",
+            "this team needs",
+            "product and operations",
+            "product operations",
+            "collaborate with product",
+            "cross functional",
+            "cross-functional",
         ]
-        if any(signal in q for signal in company_signals):
-            return {
-                "type": "company",
-                "compound": False,
-                "budget": BUDGET_MAP["company"],
-            }
 
         # Personal
         personal_signals = [
@@ -229,17 +292,118 @@ class QuestionClassifier:
             "walk me through",
             "your career",
             "your motivation",
+            "manager say",
+            "what motivates you",
+            "motivates you",
         ]
-        if any(signal in q for signal in personal_signals):
+
+        has_simple = any(signal in q for signal in simple_signals)
+        has_situational = any(signal in q for signal in situational_signals)
+        has_company = any(signal in q for signal in company_signals)
+        has_personal = any(signal in q for signal in personal_signals)
+        has_hybrid_collab_pattern = (
+            bool(re.search(r"\byour experience\b", q))
+            and (
+                "collaborate" in q
+                or "work with" in q
+            )
+            and (
+                "product and operations" in q
+                or ("product" in q and "operations" in q)
+                or "cross-functional" in q
+                or "cross functional" in q
+            )
+        )
+
+        if has_hybrid_collab_pattern:
+            return {
+                "type": "hybrid",
+                "compound": True,
+                "budget": BUDGET_MAP["hybrid"],
+            }
+
+        non_simple_hits = sum(
+            1 for matched in (has_situational, has_company, has_personal)
+            if matched
+        )
+
+        # Pure simple/logistics prompts.
+        if has_simple and non_simple_hits == 0:
+            return {
+                "type": "simple",
+                "compound": False,
+                "budget": BUDGET_MAP["simple"],
+            }
+
+        # Behavioral/situational intent should dominate over "compound"
+        # phrasing unless there is a clear company-fit component.
+        if has_situational and not has_company:
+            return {
+                "type": "situational",
+                "compound": False,
+                "budget": BUDGET_MAP["situational"],
+            }
+
+        # Compound question with mixed intent -> hybrid.
+        if is_compound:
+            if has_situational and not has_company:
+                return {
+                    "type": "situational",
+                    "compound": False,
+                    "budget": BUDGET_MAP["situational"],
+                }
+            if has_company and not has_personal and not has_situational:
+                # Compound phrasing but still purely company intent.
+                return {
+                    "type": "company",
+                    "compound": False,
+                    "budget": BUDGET_MAP["company"],
+                }
+            return {
+                "type": "hybrid",
+                "compound": True,
+                "budget": BUDGET_MAP["hybrid"],
+            }
+
+        # Multiple semantic families without explicit compound markers.
+        if non_simple_hits >= 2:
+            return {
+                "type": "hybrid",
+                "compound": True,
+                "budget": BUDGET_MAP["hybrid"],
+            }
+
+        if has_situational:
+            return {
+                "type": "situational",
+                "compound": False,
+                "budget": BUDGET_MAP["situational"],
+            }
+
+        if has_company:
+            return {
+                "type": "company",
+                "compound": False,
+                "budget": BUDGET_MAP["company"],
+            }
+
+        if has_personal:
             return {
                 "type": "personal",
                 "compound": False,
                 "budget": BUDGET_MAP["personal"],
             }
 
-        # Simple (short questions, yes/no)
+        if has_simple:
+            return {
+                "type": "simple",
+                "compound": False,
+                "budget": BUDGET_MAP["simple"],
+            }
+
+        # Simple fallback for short prompts.
         word_count = len(q.split())
-        if word_count < 6 or (q.endswith("?") and word_count < 5):
+        if word_count < 7 or (q.endswith("?") and word_count < 6):
             return {
                 "type": "simple",
                 "compound": False,

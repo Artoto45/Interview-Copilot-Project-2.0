@@ -17,11 +17,14 @@ Precision: Tracks bytes/tokens at the granular level for accuracy.
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, List
 from enum import Enum
+
+from src.saldo import SaldoManager
 
 logger = logging.getLogger("cost_calculator")
 
@@ -32,22 +35,143 @@ logger = logging.getLogger("cost_calculator")
 class APIRates(Enum):
     """Current pricing from official APIs (as of March 2026)"""
 
-    # OpenAI Realtime API (gpt-4o-mini-transcribe)
-    OPENAI_REALTIME_INPUT = 0.020 / 60  # $0.020 per minute of input audio
-    OPENAI_REALTIME_OUTPUT = 0.020 / 60  # $0.020 per minute of output audio
+    # Realtime transcription ($/minute audio)
+    OPENAI_REALTIME_AUDIO = float(
+        os.getenv("COST_OPENAI_REALTIME_AUDIO_PER_MINUTE", "0.020")
+    ) / 60
+    DEEPGRAM_REALTIME_AUDIO = float(
+        os.getenv("COST_DEEPGRAM_REALTIME_AUDIO_PER_MINUTE", "0.0043")
+    ) / 60
 
     # OpenAI Embeddings (text-embedding-3-small)
-    OPENAI_EMBEDDING_INPUT = 0.020 / 1_000_000  # $0.020 per 1M input tokens
+    OPENAI_EMBEDDING_INPUT = float(
+        os.getenv("COST_OPENAI_EMBEDDING_INPUT_PER_1M", "0.020")
+    ) / 1_000_000
+    SYNTHETIC_OPENAI_EMBEDDING_INPUT = float(
+        os.getenv(
+            "COST_SYNTHETIC_OPENAI_EMBEDDING_INPUT_PER_1M",
+            os.getenv("COST_OPENAI_EMBEDDING_INPUT_PER_1M", "0.020"),
+        )
+    ) / 1_000_000
 
-    # Anthropic Claude API (claude-3-5-sonnet-20250514)
-    CLAUDE_INPUT = 3.0 / 1_000_000  # $3.00 per 1M input tokens
-    CLAUDE_OUTPUT = 15.0 / 1_000_000  # $15.00 per 1M output tokens
-    CLAUDE_CACHE_WRITE = 3.75 / 1_000_000  # $3.75 per 1M cache write tokens
-    CLAUDE_CACHE_READ = 0.30 / 1_000_000  # $0.30 per 1M cache read tokens (90% discount)
+    # OpenAI generation pricing (gpt-4o-mini)
+    OPENAI_GPT4O_MINI_INPUT = float(
+        os.getenv("COST_OPENAI_GPT4O_MINI_INPUT_PER_1M", "0.15")
+    ) / 1_000_000
+    OPENAI_GPT4O_MINI_OUTPUT = float(
+        os.getenv("COST_OPENAI_GPT4O_MINI_OUTPUT_PER_1M", "0.60")
+    ) / 1_000_000
+    SYNTHETIC_OPENAI_GPT4O_MINI_INPUT = float(
+        os.getenv(
+            "COST_SYNTHETIC_OPENAI_GPT4O_MINI_INPUT_PER_1M",
+            os.getenv("COST_OPENAI_GPT4O_MINI_INPUT_PER_1M", "0.15"),
+        )
+    ) / 1_000_000
+    SYNTHETIC_OPENAI_GPT4O_MINI_OUTPUT = float(
+        os.getenv(
+            "COST_SYNTHETIC_OPENAI_GPT4O_MINI_OUTPUT_PER_1M",
+            os.getenv("COST_OPENAI_GPT4O_MINI_OUTPUT_PER_1M", "0.60"),
+        )
+    ) / 1_000_000
 
-    # Gemini 3.1 Pro (for agent use, not in pipeline currently)
-    GEMINI_INPUT = 1.25 / 1_000_000  # $1.25 per 1M input tokens
-    GEMINI_OUTPUT = 5.0 / 1_000_000  # $5.00 per 1M output tokens
+    # Anthropic generation pricing (claude-3-5-sonnet/claude-sonnet families)
+    CLAUDE_INPUT = float(
+        os.getenv("COST_CLAUDE_INPUT_PER_1M", "3.0")
+    ) / 1_000_000
+    CLAUDE_OUTPUT = float(
+        os.getenv("COST_CLAUDE_OUTPUT_PER_1M", "15.0")
+    ) / 1_000_000
+    CLAUDE_CACHE_WRITE = float(
+        os.getenv("COST_CLAUDE_CACHE_WRITE_PER_1M", "3.75")
+    ) / 1_000_000
+    CLAUDE_CACHE_READ = float(
+        os.getenv("COST_CLAUDE_CACHE_READ_PER_1M", "0.30")
+    ) / 1_000_000
+
+    # Gemini pricing
+    GEMINI_INPUT = float(
+        os.getenv("COST_GEMINI_INPUT_PER_1M", "1.25")
+    ) / 1_000_000
+    GEMINI_OUTPUT = float(
+        os.getenv("COST_GEMINI_OUTPUT_PER_1M", "5.0")
+    ) / 1_000_000
+    DEGRADED_INPUT = 0.0
+    DEGRADED_OUTPUT = 0.0
+
+
+GENERATION_RATE_TABLE = {
+    # OpenAI
+    "openai_gpt_4o_mini": (
+        APIRates.OPENAI_GPT4O_MINI_INPUT.value,
+        APIRates.OPENAI_GPT4O_MINI_OUTPUT.value,
+        0.0,
+        0.0,
+    ),
+    "openai:gpt-4o-mini": (
+        APIRates.OPENAI_GPT4O_MINI_INPUT.value,
+        APIRates.OPENAI_GPT4O_MINI_OUTPUT.value,
+        0.0,
+        0.0,
+    ),
+    "synthetic_openai_gpt_4o_mini": (
+        APIRates.SYNTHETIC_OPENAI_GPT4O_MINI_INPUT.value,
+        APIRates.SYNTHETIC_OPENAI_GPT4O_MINI_OUTPUT.value,
+        0.0,
+        0.0,
+    ),
+    "synthetic:openai-gpt-4o-mini": (
+        APIRates.SYNTHETIC_OPENAI_GPT4O_MINI_INPUT.value,
+        APIRates.SYNTHETIC_OPENAI_GPT4O_MINI_OUTPUT.value,
+        0.0,
+        0.0,
+    ),
+    # Anthropic
+    "claude_sonnet": (
+        APIRates.CLAUDE_INPUT.value,
+        APIRates.CLAUDE_OUTPUT.value,
+        APIRates.CLAUDE_CACHE_WRITE.value,
+        APIRates.CLAUDE_CACHE_READ.value,
+    ),
+    "anthropic:claude-sonnet": (
+        APIRates.CLAUDE_INPUT.value,
+        APIRates.CLAUDE_OUTPUT.value,
+        APIRates.CLAUDE_CACHE_WRITE.value,
+        APIRates.CLAUDE_CACHE_READ.value,
+    ),
+    # Gemini
+    "gemini_flash": (
+        APIRates.GEMINI_INPUT.value,
+        APIRates.GEMINI_OUTPUT.value,
+        0.0,
+        0.0,
+    ),
+    "google:gemini-2.5-flash": (
+        APIRates.GEMINI_INPUT.value,
+        APIRates.GEMINI_OUTPUT.value,
+        0.0,
+        0.0,
+    ),
+    # Local degraded fallback mode (no external API cost)
+    "degraded_local": (
+        APIRates.DEGRADED_INPUT.value,
+        APIRates.DEGRADED_OUTPUT.value,
+        0.0,
+        0.0,
+    ),
+    "degraded:local": (
+        APIRates.DEGRADED_INPUT.value,
+        APIRates.DEGRADED_OUTPUT.value,
+        0.0,
+        0.0,
+    ),
+}
+
+EMBEDDING_RATE_TABLE = {
+    "openai_embedding": APIRates.OPENAI_EMBEDDING_INPUT.value,
+    "openai:text-embedding-3-small": APIRates.OPENAI_EMBEDDING_INPUT.value,
+    "synthetic_openai_embedding": APIRates.SYNTHETIC_OPENAI_EMBEDDING_INPUT.value,
+    "synthetic:openai-text-embedding-3-small": APIRates.SYNTHETIC_OPENAI_EMBEDDING_INPUT.value,
+}
 
 
 class CostCategory(Enum):
@@ -57,7 +181,7 @@ class CostCategory(Enum):
     TRANSCRIPTION_INTERVIEWER = "transcription_interviewer"  # Audio → text (interviewer)
     EMBEDDING = "embedding"  # Question → embedding for KB search
     RETRIEVAL = "retrieval"  # KB lookup (assumed zero-cost)
-    GENERATION = "generation"  # Claude response generation
+    GENERATION = "generation"  # LLM response generation
     CACHE_WRITE = "cache_write"  # Prompt caching (first call)
     CACHE_READ = "cache_read"  # Prompt caching (subsequent calls)
 
@@ -81,7 +205,7 @@ class CostEntry:
     output_amount: Optional[float] = None
     output_unit: Optional[str] = None
 
-    # Cache metrics (Claude only)
+    # Cache metrics (provider-dependent)
     cache_write_tokens: Optional[int] = None
     cache_read_tokens: Optional[int] = None
 
@@ -117,10 +241,10 @@ class SessionCostBreakdown:
     transcription_user_minutes: float = 0.0
     transcription_interviewer_minutes: float = 0.0
     embedding_input_tokens: int = 0
-    claude_input_tokens: int = 0
-    claude_output_tokens: int = 0
-    claude_cache_write_tokens: int = 0
-    claude_cache_read_tokens: int = 0
+    generation_input_tokens: int = 0
+    generation_output_tokens: int = 0
+    generation_cache_write_tokens: int = 0
+    generation_cache_read_tokens: int = 0
 
     # Totals
     total_cost_usd: float = 0.0
@@ -144,24 +268,31 @@ class SessionCostBreakdown:
 
         # Update detailed metrics
         if entry.category == CostCategory.TRANSCRIPTION_INPUT:
-            if "user" in entry.api_name.lower():
-                self.transcription_user_minutes += entry.input_amount
-            elif "interviewer" in entry.api_name.lower():
+            if "interviewer" in entry.api_name.lower():
                 self.transcription_interviewer_minutes += entry.input_amount
+            else:
+                self.transcription_user_minutes += entry.input_amount
+
+        elif entry.category == CostCategory.TRANSCRIPTION_INTERVIEWER:
+            self.transcription_interviewer_minutes += entry.input_amount
 
         elif entry.category == CostCategory.EMBEDDING:
             self.embedding_input_tokens += int(entry.input_amount)
 
         elif entry.category == CostCategory.GENERATION:
-            self.claude_input_tokens += int(entry.input_amount)
+            self.generation_input_tokens += int(entry.input_amount)
             if entry.output_amount:
-                self.claude_output_tokens += int(entry.output_amount)
+                self.generation_output_tokens += int(entry.output_amount)
 
         elif entry.category == CostCategory.CACHE_WRITE:
-            self.claude_cache_write_tokens += entry.cache_write_tokens or 0
+            self.generation_cache_write_tokens += (
+                entry.cache_write_tokens or 0
+            )
 
         elif entry.category == CostCategory.CACHE_READ:
-            self.claude_cache_read_tokens += entry.cache_read_tokens or 0
+            self.generation_cache_read_tokens += (
+                entry.cache_read_tokens or 0
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -188,13 +319,14 @@ class CostTracker:
             question="Tell me about your background"
         )
 
-        # When Claude generates:
+        # When response model generates:
         pipeline.cost_tracker.track_generation(
             input_tokens=2048,
             output_tokens=256,
             cache_write_tokens=1024,
             cache_read_tokens=1024,
             question="...",
+            api_name="openai_gpt_4o_mini",
         )
 
         # At session end:
@@ -202,7 +334,11 @@ class CostTracker:
         pipeline.cost_tracker.save_report(report)
     """
 
-    def __init__(self, session_id: str):
+    def __init__(
+        self,
+        session_id: str,
+        default_embedding_api_name: str = "openai_embedding",
+    ):
         self.session_id = session_id
         self.start_time = datetime.now()
         self.entries: List[CostEntry] = []
@@ -211,12 +347,19 @@ class CostTracker:
             start_time=self.start_time.isoformat(),
             end_time="",
         )
+        self.saldo_manager = SaldoManager()
+        self.default_embedding_api_name = default_embedding_api_name
+
+    def _register_entry(self, entry: CostEntry):
+        self.entries.append(entry)
+        self.breakdown.add_cost_entry(entry)
+        self.saldo_manager.record_cost(entry.api_name, entry.cost_usd)
 
     def track_transcription(
         self,
         speaker: str,
         duration_seconds: float,
-        api_name: str = "openai_realtime",
+        api_name: str = "openai_realtime_user",
     ):
         """
         Track transcription API cost.
@@ -224,19 +367,21 @@ class CostTracker:
         Args:
             speaker: "user" or "interviewer"
             duration_seconds: Length of audio segment
-            api_name: "openai_realtime_user" or "openai_realtime_interviewer"
+            api_name: e.g. "openai_realtime_user", "deepgram_interviewer"
         """
         duration_minutes = duration_seconds / 60.0
 
-        # Determine category and rate
-        if speaker == "user":
-            category = CostCategory.TRANSCRIPTION_INPUT
-            rate = APIRates.OPENAI_REALTIME_INPUT.value
-            api_name = api_name or "openai_realtime_user"
+        category = (
+            CostCategory.TRANSCRIPTION_INPUT
+            if speaker == "user"
+            else CostCategory.TRANSCRIPTION_INTERVIEWER
+        )
+
+        api_lower = (api_name or "").lower()
+        if "deepgram" in api_lower:
+            rate = APIRates.DEEPGRAM_REALTIME_AUDIO.value
         else:
-            category = CostCategory.TRANSCRIPTION_INTERVIEWER
-            rate = APIRates.OPENAI_REALTIME_OUTPUT.value
-            api_name = api_name or "openai_realtime_interviewer"
+            rate = APIRates.OPENAI_REALTIME_AUDIO.value
 
         cost = duration_minutes * rate
 
@@ -250,8 +395,7 @@ class CostTracker:
             session_id=self.session_id,
         )
 
-        self.entries.append(entry)
-        self.breakdown.add_cost_entry(entry)
+        self._register_entry(entry)
 
         logger.debug(
             f"Transcription ({speaker}): "
@@ -262,7 +406,7 @@ class CostTracker:
         self,
         tokens: int,
         question: Optional[str] = None,
-        api_name: str = "openai_embedding",
+        api_name: Optional[str] = None,
     ):
         """
         Track embedding API cost.
@@ -270,15 +414,16 @@ class CostTracker:
         Args:
             tokens: Number of input tokens
             question: Original question (for context)
-            api_name: "openai_embedding" typically
+            api_name: Embedding pricing key. Uses tracker default when omitted.
         """
-        rate = APIRates.OPENAI_EMBEDDING_INPUT.value
+        resolved_api_name = api_name or self.default_embedding_api_name
+        rate = self._resolve_embedding_rate(resolved_api_name)
         cost = tokens * rate
 
         entry = CostEntry(
             timestamp=datetime.now().isoformat(),
             category=CostCategory.EMBEDDING,
-            api_name=api_name,
+            api_name=resolved_api_name,
             input_amount=tokens,
             input_unit="tokens",
             cost_usd=cost,
@@ -286,8 +431,7 @@ class CostTracker:
             session_id=self.session_id,
         )
 
-        self.entries.append(entry)
-        self.breakdown.add_cost_entry(entry)
+        self._register_entry(entry)
 
         logger.debug(
             f"Embedding: {tokens} tokens → ${cost:.6f}"
@@ -298,39 +442,70 @@ class CostTracker:
         input_tokens: int,
         output_tokens: int,
         question: Optional[str] = None,
-        api_name: str = "claude_sonnet",
+        api_name: str = "openai_gpt_4o_mini",
         cache_write_tokens: int = 0,
         cache_read_tokens: int = 0,
     ):
         """
-        Track Claude API generation cost.
+        Track generation cost for the active LLM provider.
 
         Args:
-            input_tokens: Input tokens to Claude
-            output_tokens: Output tokens from Claude
+            input_tokens: Input tokens to model
+            output_tokens: Output tokens from model
             question: Original question (for context)
-            api_name: "claude_sonnet" typically
+            api_name: Pricing key (e.g. openai_gpt_4o_mini, claude_sonnet)
             cache_write_tokens: Tokens written to cache (first call)
             cache_read_tokens: Tokens read from cache (subsequent)
         """
-        # Input cost (always charged)
-        input_cost = input_tokens * APIRates.CLAUDE_INPUT.value
+        (
+            input_rate,
+            output_rate,
+            cache_write_rate,
+            cache_read_rate,
+        ) = self._resolve_generation_rates(api_name)
 
-        # Output cost (always charged)
-        output_cost = output_tokens * APIRates.CLAUDE_OUTPUT.value
+        # Input/output cost (always charged)
+        input_cost = input_tokens * input_rate
+        output_cost = output_tokens * output_rate
 
         # Cache costs (mutually exclusive: write OR read, not both)
         cache_cost = 0.0
-        cache_category = None
 
         if cache_write_tokens > 0:
-            cache_cost = cache_write_tokens * APIRates.CLAUDE_CACHE_WRITE.value
-            cache_category = CostCategory.CACHE_WRITE
+            cache_cost = cache_write_tokens * cache_write_rate
+            if cache_write_rate > 0:
+                self._register_entry(
+                    CostEntry(
+                        timestamp=datetime.now().isoformat(),
+                        category=CostCategory.CACHE_WRITE,
+                        api_name=api_name,
+                        input_amount=cache_write_tokens,
+                        input_unit="tokens",
+                        cache_write_tokens=cache_write_tokens,
+                        cost_usd=cache_cost,
+                        question_text=question[:100] if question else None,
+                        session_id=self.session_id,
+                    )
+                )
         elif cache_read_tokens > 0:
-            cache_cost = cache_read_tokens * APIRates.CLAUDE_CACHE_READ.value
-            cache_category = CostCategory.CACHE_READ
+            cache_cost = cache_read_tokens * cache_read_rate
+            if cache_read_rate > 0:
+                self._register_entry(
+                    CostEntry(
+                        timestamp=datetime.now().isoformat(),
+                        category=CostCategory.CACHE_READ,
+                        api_name=api_name,
+                        input_amount=cache_read_tokens,
+                        input_unit="tokens",
+                        cache_read_tokens=cache_read_tokens,
+                        cost_usd=cache_cost,
+                        question_text=question[:100] if question else None,
+                        session_id=self.session_id,
+                    )
+                )
 
-        total_cost = input_cost + output_cost + cache_cost
+        generation_cost = input_cost + output_cost
+        total_with_cache = generation_cost + cache_cost
 
         # Generation entry
         entry = CostEntry(
@@ -343,24 +518,51 @@ class CostTracker:
             output_unit="tokens",
             cache_write_tokens=cache_write_tokens if cache_write_tokens > 0 else None,
             cache_read_tokens=cache_read_tokens if cache_read_tokens > 0 else None,
-            cost_usd=total_cost,
+            cost_usd=generation_cost,
             question_text=question[:100] if question else None,
             session_id=self.session_id,
         )
 
-        self.entries.append(entry)
-        self.breakdown.add_cost_entry(entry)
+        self._register_entry(entry)
 
         logger.debug(
             f"Generation: {input_tokens} in + {output_tokens} out → "
-            f"${total_cost:.6f} "
+            f"${total_with_cache:.6f} "
             f"(cache: {cache_write_tokens} write, {cache_read_tokens} read)"
         )
+
+    @staticmethod
+    def _resolve_generation_rates(api_name: str) -> tuple[float, float, float, float]:
+        rates = GENERATION_RATE_TABLE.get(api_name)
+        if rates:
+            return rates
+
+        logger.warning(
+            f"Unknown generation api_name='{api_name}', "
+            "falling back to openai_gpt_4o_mini rates"
+        )
+        return GENERATION_RATE_TABLE["openai_gpt_4o_mini"]
+
+    @staticmethod
+    def _resolve_embedding_rate(api_name: str) -> float:
+        rate = EMBEDDING_RATE_TABLE.get(api_name)
+        if rate is not None:
+            return rate
+
+        logger.warning(
+            f"Unknown embedding api_name='{api_name}', "
+            "falling back to openai_embedding rates"
+        )
+        return EMBEDDING_RATE_TABLE["openai_embedding"]
 
     def get_session_report(self) -> SessionCostBreakdown:
         """Get final breakdown for session"""
         self.breakdown.end_time = datetime.now().isoformat()
         return self.breakdown
+
+    def get_saldo_snapshot(self) -> dict:
+        elapsed_minutes = (datetime.now() - self.start_time).total_seconds() / 60.0
+        return self.saldo_manager.build_snapshot(elapsed_minutes)
 
     def save_report(self, report: SessionCostBreakdown, output_dir: Optional[Path] = None):
         """
@@ -385,14 +587,15 @@ class CostTracker:
             "end_time": report.end_time,
             "costs_by_category": report.costs_by_category,
             "api_calls_count": report.api_calls_count,
+            "saldo": self.get_saldo_snapshot(),
             "metrics": {
                 "transcription_user_minutes": report.transcription_user_minutes,
                 "transcription_interviewer_minutes": report.transcription_interviewer_minutes,
                 "embedding_input_tokens": report.embedding_input_tokens,
-                "claude_input_tokens": report.claude_input_tokens,
-                "claude_output_tokens": report.claude_output_tokens,
-                "claude_cache_write_tokens": report.claude_cache_write_tokens,
-                "claude_cache_read_tokens": report.claude_cache_read_tokens,
+                "generation_input_tokens": report.generation_input_tokens,
+                "generation_output_tokens": report.generation_output_tokens,
+                "generation_cache_write_tokens": report.generation_cache_write_tokens,
+                "generation_cache_read_tokens": report.generation_cache_read_tokens,
             },
             "totals": {
                 "total_cost_usd": round(report.total_cost_usd, 6),
@@ -431,15 +634,28 @@ class CostTracker:
         logger.info(f"  Transcription (user):          {report.transcription_user_minutes:8.2f} minutes")
         logger.info(f"  Transcription (interviewer):   {report.transcription_interviewer_minutes:8.2f} minutes")
         logger.info(f"  Embedding input tokens:        {report.embedding_input_tokens:10d}")
-        logger.info(f"  Claude input tokens:           {report.claude_input_tokens:10d}")
-        logger.info(f"  Claude output tokens:          {report.claude_output_tokens:10d}")
-        logger.info(f"  Claude cache write tokens:     {report.claude_cache_write_tokens:10d}")
-        logger.info(f"  Claude cache read tokens:      {report.claude_cache_read_tokens:10d}")
+        logger.info(f"  Generation input tokens:       {report.generation_input_tokens:10d}")
+        logger.info(f"  Generation output tokens:      {report.generation_output_tokens:10d}")
+        logger.info(f"  Generation cache write tokens: {report.generation_cache_write_tokens:10d}")
+        logger.info(f"  Generation cache read tokens:  {report.generation_cache_read_tokens:10d}")
         logger.info("")
         logger.info("TOTALS:")
         logger.info(f"  Total Cost:                    ${report.total_cost_usd:10.6f}")
         logger.info(f"  Questions Processed:           {report.questions_processed:10d}")
         logger.info(f"  Responses Generated:           {report.responses_generated:10d}")
+        saldo = self.get_saldo_snapshot()
+        fuel = saldo.get("fuel_gauge", {})
+        logger.info("BALANCE / FUEL GAUGE:")
+        for provider, info in saldo.get("providers", {}).items():
+            logger.info(
+                f"  {provider:30s}: ${info['remaining_usd']:10.4f} "
+                f"({info['human_readable_remaining']})"
+            )
+        logger.info(
+            "  bottleneck: "
+            f"{fuel.get('bottleneck_provider')} "
+            f"({fuel.get('human_readable_until_any_depletion')})"
+        )
         logger.info("=" * 60)
 
 

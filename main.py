@@ -12,6 +12,9 @@ lightweight local WebSocket server (websockets library only).
 import asyncio
 import json
 import logging
+import os
+import random
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -29,6 +32,8 @@ from src.knowledge.retrieval import KnowledgeRetriever
 from src.knowledge.classifier import QuestionClassifier
 from src.knowledge.question_filter import QuestionFilter
 from src.response.openai_agent import OpenAIAgent
+from src.response.fallback_manager import FallbackResponseManager
+from src.response.interview_memory import InterviewMemory
 from src.metrics import SessionMetrics, QuestionMetrics
 from src.alerting import AlertManager
 from src.prometheus import start_metrics_server, response_latency, cache_hit_rate, question_count
@@ -48,6 +53,11 @@ logger = logging.getLogger("coordinator")
 
 WS_HOST = "127.0.0.1"
 WS_PORT = 8765  # Local-only WebSocket for teleprompter bridge
+FRAGMENT_HOLD_MIN_S = max(0.4, float(os.getenv("FRAGMENT_HOLD_MIN_S", "0.8")))
+FRAGMENT_HOLD_MAX_S = max(
+    FRAGMENT_HOLD_MIN_S,
+    float(os.getenv("FRAGMENT_HOLD_MAX_S", "1.2")),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +79,7 @@ class PipelineState:
         self.classifier: Optional[QuestionClassifier] = None
         self.question_filter: Optional[QuestionFilter] = None
         self.response_agent: Optional[OpenAIAgent] = None
+        self.interview_memory: Optional[InterviewMemory] = None
 
         # Connected teleprompter clients
         self.ws_clients: set = set()
@@ -83,6 +94,11 @@ class PipelineState:
 
         # Concurrency control
         self.active_generation_task: Optional[asyncio.Task] = None
+
+        # Fragment gate for potentially truncated interviewer questions
+        self.pending_fragment_task: Optional[asyncio.Task] = None
+        self.pending_fragment_payload: Optional[dict] = None
+        self.pending_fragment_nonce: int = 0
 
 
 pipeline = PipelineState()
@@ -111,6 +127,30 @@ async def broadcast_message(message: dict):
 async def broadcast_token(token: str):
     """Send a streaming token to teleprompter clients."""
     await broadcast_message({"type": "token", "data": token})
+
+
+async def publish_saldo_update():
+    """Broadcast real-time balance + fuel gauge to UI clients."""
+    if not pipeline.cost_tracker:
+        return
+    try:
+        snapshot = pipeline.cost_tracker.get_saldo_snapshot()
+        await broadcast_message({"type": "saldo_update", "data": snapshot})
+
+        fuel = snapshot.get("fuel_gauge", {})
+        providers = snapshot.get("providers", {})
+        openai = providers.get("openai", {})
+        deepgram = providers.get("deepgram", {})
+        anthropic = providers.get("anthropic", {})
+        logger.info(
+            "SALDO | "
+            f"OpenAI=${openai.get('remaining_usd', 0):.4f} | "
+            f"Deepgram=${deepgram.get('remaining_usd', 0):.4f} | "
+            f"Anthropic=${anthropic.get('remaining_usd', 0):.4f} | "
+            f"fuel={fuel.get('human_readable_until_any_depletion')}"
+        )
+    except Exception as e:
+        logger.warning(f"Could not publish saldo update: {e}")
 
 
 async def ws_handler(websocket: ServerConnection):
@@ -203,6 +243,132 @@ class SpeculativeState:
 _speculative = SpeculativeState()
 
 
+def _next_fragment_hold_seconds() -> float:
+    if abs(FRAGMENT_HOLD_MAX_S - FRAGMENT_HOLD_MIN_S) < 1e-6:
+        return FRAGMENT_HOLD_MIN_S
+    return random.uniform(FRAGMENT_HOLD_MIN_S, FRAGMENT_HOLD_MAX_S)
+
+
+async def _cancel_pending_fragment():
+    """Cancel pending fragment hold task and clear payload."""
+    task = pipeline.pending_fragment_task
+    pipeline.pending_fragment_task = None
+    pipeline.pending_fragment_payload = None
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+async def _emit_fragment_clarification(payload: dict):
+    """
+    Provide a safe clarification response when only a partial question
+    was captured after hold timeout.
+    """
+    raw_question = str(payload.get("raw_question", "")).strip()
+    response_text = (
+        "I want to answer that precisely, but I only caught part of the question. "
+        "Could you repeat it from the start?"
+    )
+
+    logger.info(
+        "Fragment gate fallback triggered "
+        f"(reason={payload.get('fragment_reason', 'unknown')}, "
+        f"hold={payload.get('hold_seconds', 0):.2f}s)"
+    )
+
+    pipeline.total_questions += 1
+    pipeline.total_responses += 1
+
+    await broadcast_message({"type": "new_question"})
+    for token in re.findall(r"\S+\s*", response_text):
+        await broadcast_token(token)
+
+    pipeline.conversation_history.append({
+        "question": raw_question,
+        "type": "fragment_clarification",
+        "provider": "system_fragment_gate",
+        "response": response_text,
+        "raw_question": raw_question,
+        "normalized_question": payload.get("normalized_question", raw_question),
+        "fragment_reason": payload.get("fragment_reason", "unknown"),
+        "timestamp": datetime.now().isoformat(),
+    })
+    _log_conversation(
+        raw_question,
+        response_text,
+        "fragment_clarification",
+        metadata={
+            "raw_question": raw_question,
+            "normalized_question": payload.get(
+                "normalized_question",
+                raw_question,
+            ),
+            "classification_reason": payload.get("analysis_reason", "fragment_gate"),
+            "fragment_risk": True,
+            "fragment_reason": payload.get("fragment_reason", "unknown"),
+            "speculative_used": False,
+            "validation": {
+                "is_valid": True,
+                "attempts": 0,
+                "reasons": [],
+            },
+            "kb_evidence": [],
+        },
+    )
+    await broadcast_message({"type": "response_end"})
+
+
+async def _fragment_hold_worker(nonce: int, hold_seconds: float):
+    """Wait briefly for continuation, otherwise emit clarification fallback."""
+    try:
+        await asyncio.sleep(hold_seconds)
+        payload = pipeline.pending_fragment_payload
+        if not payload:
+            return
+        if int(payload.get("nonce", -1)) != nonce:
+            return
+        pipeline.pending_fragment_payload = None
+        pipeline.pending_fragment_task = None
+        await _emit_fragment_clarification(payload)
+    except asyncio.CancelledError:
+        logger.debug("Fragment hold cancelled")
+
+
+async def _schedule_fragment_gate(
+    raw_question: str,
+    normalized_question: str,
+    analysis: dict,
+):
+    """
+    Hold likely truncated questions briefly to allow a continuation turn
+    to arrive before triggering RAG generation.
+    """
+    await _cancel_pending_fragment()
+    hold_seconds = _next_fragment_hold_seconds()
+    pipeline.pending_fragment_nonce += 1
+    nonce = pipeline.pending_fragment_nonce
+    pipeline.pending_fragment_payload = {
+        "nonce": nonce,
+        "raw_question": raw_question,
+        "normalized_question": normalized_question,
+        "analysis_reason": analysis.get("reason", "unknown"),
+        "fragment_reason": analysis.get("fragment_reason", "unknown"),
+        "hold_seconds": hold_seconds,
+        "created_at": datetime.now().isoformat(),
+    }
+    pipeline.pending_fragment_task = asyncio.create_task(
+        _fragment_hold_worker(nonce, hold_seconds)
+    )
+    logger.info(
+        "Fragment gate armed "
+        f"(hold={hold_seconds:.2f}s, reason={analysis.get('fragment_reason')}, "
+        f"text='{normalized_question[:80]}')"
+    )
+
+
 async def on_transcript(speaker: str, text: str):
     """
     Callback: called when a complete utterance arrives.
@@ -227,19 +393,62 @@ async def on_transcript(speaker: str, text: str):
     })
 
     if speaker == "interviewer":
+        candidate_text = text
+        if pipeline.pending_fragment_payload:
+            pending = pipeline.pending_fragment_payload
+            candidate_text = (
+                f"{pending.get('raw_question', '').strip()} {text.strip()}"
+            ).strip()
+            logger.info(
+                "Merging pending fragment with new interviewer turn "
+                f"(nonce={pending.get('nonce')})"
+            )
+            await _cancel_pending_fragment()
+
+        analysis = pipeline.question_filter.analyze_interview_turn(candidate_text)
+
         # --- INTERVIEWER: evaluate and potentially trigger RAG ---
-        if pipeline.question_filter.is_interview_question(text):
+        if analysis.get("is_question", False):
+            normalized_question = str(
+                analysis.get("normalized_text", candidate_text)
+            ).strip() or candidate_text
+
+            if analysis.get("fragment_risk", False):
+                await _schedule_fragment_gate(
+                    raw_question=candidate_text,
+                    normalized_question=normalized_question,
+                    analysis=analysis,
+                )
+                return
+
             pipeline.total_questions += 1
-            
+
             # Cancel any previous question processing task
             if pipeline.active_generation_task and not pipeline.active_generation_task.done():
                 logger.info("Interrupting previous generation for new question.")
                 pipeline.active_generation_task.cancel()
                 
             # Start answering the new question
-            pipeline.active_generation_task = asyncio.create_task(process_question(text))
+            question_meta = {
+                "filter_reason": analysis.get("reason", "unknown"),
+                "fragment_risk": bool(analysis.get("fragment_risk", False)),
+                "fragment_reason": analysis.get("fragment_reason", "none"),
+                "normalized_question": normalized_question,
+                "raw_question": candidate_text,
+            }
+            pipeline.active_generation_task = asyncio.create_task(
+                process_question(
+                    normalized_question,
+                    raw_question=candidate_text,
+                    question_meta=question_meta,
+                )
+            )
         else:
-            logger.info(f"Interviewer noise skipped: {text[:60]}…")
+            logger.info(
+                "Interviewer noise skipped "
+                f"(reason={analysis.get('reason', 'unknown')}): "
+                f"{candidate_text[:60]}…"
+            )
 
     elif speaker == "user":
         # --- CANDIDATE: save as context (what YOU already said) ---
@@ -248,7 +457,30 @@ async def on_transcript(speaker: str, text: str):
             "text": text,
             "timestamp": datetime.now().isoformat(),
         })
+        if pipeline.interview_memory:
+            pipeline.interview_memory.ingest_candidate_utterance(text)
         logger.info(f"Candidate speech saved as context ({len(text)} chars)")
+
+
+def _recent_response_context(
+    max_items: int = 3
+) -> tuple[list[str], list[str], list[str]]:
+    """
+    Return recent interviewer questions and generated answers for
+    anti-repetition guidance in the response prompt.
+    """
+    qa_items = [
+        entry for entry in pipeline.conversation_history
+        if "question" in entry and "response" in entry
+    ]
+    if not qa_items:
+        return [], [], []
+
+    tail = qa_items[-max_items:]
+    recent_questions = [str(item.get("question", "")) for item in tail]
+    recent_responses = [str(item.get("response", "")) for item in tail]
+    recent_types = [str(item.get("type", "")) for item in tail]
+    return recent_questions, recent_responses, recent_types
 
 
 async def on_delta(speaker: str, delta: str):
@@ -317,12 +549,31 @@ async def _run_speculative_generation(delta_text: str):
 
         # Classify speculatively
         classification = pipeline.classifier._fallback_classify(delta_text)
+        (
+            recent_questions,
+            recent_responses,
+            recent_types,
+        ) = _recent_response_context(
+            max_items=2
+        )
+        memory_context = (
+            pipeline.interview_memory.build_prompt_context(
+                question=delta_text,
+                question_type=classification["type"],
+            )
+            if pipeline.interview_memory
+            else None
+        )
 
         # Generate speculatively (tokens buffered, not broadcast yet)
         async for token in pipeline.response_agent.generate(
             question=delta_text,
             kb_chunks=kb_chunks,
             question_type=classification["type"],
+            recent_questions=recent_questions,
+            recent_responses=recent_responses,
+            recent_question_types=recent_types,
+            memory_context=memory_context,
         ):
             await _speculative.add_token(token)
     except asyncio.CancelledError:
@@ -331,19 +582,55 @@ async def _run_speculative_generation(delta_text: str):
         logger.warning(f"Speculative generation error: {e}")
 
 
+def _normalize_for_similarity(text: str) -> list[str]:
+    cleaned = (text or "").lower()
+    cleaned = re.sub(r"[^a-z0-9\s]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned.split()
+
+
+def _lexical_similarity(delta: str, final: str) -> float:
+    a = _normalize_for_similarity(delta)
+    b = _normalize_for_similarity(final)
+    if not a or not b:
+        return 0.0
+
+    # Blend overlap + ordered similarity to reduce embedding calls.
+    set_a = set(a)
+    set_b = set(b)
+    jaccard = len(set_a & set_b) / max(1, len(set_a | set_b))
+    ordered = sum(1 for x, y in zip(a, b) if x == y) / max(1, min(len(a), len(b)))
+    return (jaccard * 0.70) + (ordered * 0.30)
+
+
 async def is_similar_enough_semantic(delta: str, final: str) -> tuple[bool, float]:
     """Check semantic similarity between delta and final transcript"""
     if not delta or not final:
         return False, 0.0
-    
+
+    lexical_score = _lexical_similarity(delta, final)
+    if lexical_score >= 0.68:
+        logger.info(
+            f"Similarity fast-path lexical={lexical_score:.3f} → ACCEPT"
+        )
+        return True, lexical_score
+    if lexical_score <= 0.30:
+        logger.info(
+            f"Similarity fast-path lexical={lexical_score:.3f} → REJECT"
+        )
+        return False, lexical_score
+
     try:
         from openai import AsyncOpenAI
         import numpy as np
-        
+
         client = AsyncOpenAI()
-        embeddings = await client.embeddings.create(
-            model="text-embedding-3-small",
-            input=[delta, final]
+        embeddings = await asyncio.wait_for(
+            client.embeddings.create(
+                model="text-embedding-3-small",
+                input=[delta, final]
+            ),
+            timeout=0.35,
         )
         
         delta_emb = np.array(embeddings.data[0].embedding, dtype=np.float32)
@@ -355,12 +642,22 @@ async def is_similar_enough_semantic(delta: str, final: str) -> tuple[bool, floa
         similarity = float(dot_product / norm_product)
 
         is_similar = similarity > 0.80
-        logger.info(f"Semantic similarity: {similarity:.3f} → {'ACCEPT' if is_similar else 'REJECT'}")
-        
+        logger.info(
+            f"Semantic similarity embedding={similarity:.3f} "
+            f"(lexical={lexical_score:.3f}) → "
+            f"{'ACCEPT' if is_similar else 'REJECT'}"
+        )
+
         return is_similar, float(similarity)
+    except asyncio.TimeoutError:
+        logger.info(
+            "Semantic similarity timeout â†’ fallback lexical REJECT "
+            f"(lexical={lexical_score:.3f})"
+        )
+        return False, lexical_score
     except Exception as e:
         logger.warning(f"Semantic similarity check failed: {e}")
-        return False, 0.0
+        return False, lexical_score
 
 
 async def retry_with_backoff(
@@ -386,22 +683,38 @@ async def retry_with_backoff(
                 logger.error(f"All {max_retries} attempts exhausted. Last error: {e}")
     return None
 
-async def process_question(question: str):
+async def _broadcast_text_as_tokens(text: str):
+    """Broadcast a full response in token-like chunks for teleprompter display."""
+    for token in re.findall(r"\S+\s*|\n+", text):
+        await broadcast_token(token)
+
+
+async def process_question(
+    question: str,
+    raw_question: Optional[str] = None,
+    question_meta: Optional[dict] = None,
+):
     """
-    Full RAG pipeline with 3 perceived speed optimizations:
-    1. Prompt caching (in claude_agent.py)
-    2. Instant opener (shown before API call)
-    3. Speculative generation (started during transcription)
+    Full RAG pipeline with fragment-safe metadata, validated generation,
+    and RAG evidence tracing.
     """
     import time
+
     t_start = time.perf_counter()
+    question_meta = question_meta or {}
+    raw_question = (raw_question or question).strip()
+    normalized_question = (
+        pipeline.question_filter.normalize_question_text(question)
+        if pipeline.question_filter
+        else question
+    ).strip() or question.strip()
+
     try:
         # Clear teleprompter for fresh response
         await broadcast_message({"type": "new_question"})
 
         # Classify (instant, rule-based)
-        classification = pipeline.classifier._fallback_classify(question)
-
+        classification = pipeline.classifier._fallback_classify(normalized_question)
         t_classify = time.perf_counter()
         logger.info(
             f"Classified: type={classification['type']}, "
@@ -409,13 +722,38 @@ async def process_question(question: str):
             f"({(t_classify - t_start)*1000:.0f}ms)"
         )
 
-        # ── Optimization #3: Check speculative generation ──
+        # ── Optimization #3: speculative generation gate ──
         g_task = await _speculative.get_gen_task()
-        _, r_query = await _speculative.get_retrieval_task()
+        r_task, r_query = await _speculative.get_retrieval_task()
         g_tokens = await _speculative.get_tokens()
-        
-        is_similar, score = await is_similar_enough_semantic(r_query, question)
-        
+
+        response_text: Optional[str] = None
+        validation_report: Optional[dict] = None
+        kb_chunks: list[str] = []
+        kb_evidence: list[dict] = []
+        used_speculative = False
+
+        is_similar = False
+        if r_query and g_task:
+            try:
+                is_similar, _ = await asyncio.wait_for(
+                    is_similar_enough_semantic(r_query, normalized_question),
+                    timeout=0.28,
+                )
+            except asyncio.TimeoutError:
+                logger.info(
+                    "Similarity gate timeout → skip speculative hit "
+                    f"for question='{normalized_question[:50]}...'"
+                )
+                is_similar = False
+
+        if is_similar and g_task and not g_task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(g_task), timeout=0.35)
+            except asyncio.TimeoutError:
+                pass
+            g_tokens = await _speculative.get_tokens()
+
         if (
             g_task
             and g_task.done()
@@ -423,173 +761,234 @@ async def process_question(question: str):
             and g_tokens
             and is_similar
         ):
-            # Speculative hit! Flush buffered tokens immediately
-            logger.info(
-                f"SPECULATIVE GEN HIT ⚡⚡ Flushing "
-                f"{len(g_tokens)} buffered tokens"
-            )
-            full_response = list(g_tokens)
-            for token in full_response:
-                await broadcast_token(token)
+            spec_response = "".join(g_tokens)
+            spec_kb_chunks = []
+            if r_task and r_task.done() and not r_task.cancelled():
+                try:
+                    spec_kb_chunks = list(r_task.result() or [])
+                except Exception:
+                    spec_kb_chunks = []
 
-            # Reset speculative state
-            await _speculative.cancel_all()
-
-            pipeline.total_responses += 1
-            response_text = "".join(full_response)
-            t_end = time.perf_counter()
-            total_ms = (t_end - t_start) * 1000
-            logger.info(
-                f"SPECULATIVE response: {len(response_text)} chars "
-                f"(total pipeline: {total_ms:.0f}ms) ⚡⚡"
-            )
-
-            # Save and log
-            pipeline.conversation_history.append({
-                "question": question,
-                "type": classification["type"],
-                "response": response_text,
-                "timestamp": datetime.now().isoformat(),
-            })
-            _log_conversation(question, response_text, classification["type"])
-            await broadcast_message({"type": "response_end"})
-            return
-
-        # Cancel any incomplete speculative generation
-        await _speculative.cancel_gen()
-
-        # ── Optimization #2: Instant opener ──
-        opener = pipeline.response_agent.get_instant_opener(
-            classification["type"]
-        )
-        logger.info(f"Instant opener: {opener.strip()}")
-
-        # Check if we have speculative KB results ready
-        kb_chunks = None
-        r_task, _ = await _speculative.get_retrieval_task()
-        if (
-            r_task
-            and r_task.done()
-            and not r_task.cancelled()
-        ):
-            try:
-                kb_chunks = r_task.result()
-                logger.info(
-                    f"SPECULATIVE HIT: Using pre-fetched "
-                    f"{len(kb_chunks)} KB chunks ⚡"
-                )
-            except Exception:
-                kb_chunks = None
-
-        # If no speculative results, fetch now (with retry backoff)
-        if kb_chunks is None:
-            kb_chunks = await retry_with_backoff(
-                pipeline.retriever.retrieve,
-                query=question,
+            spec_validation = pipeline.response_agent.validate_generated_response(
+                response_text=spec_response,
                 question_type=classification["type"],
-                max_retries=3
+                kb_chunks=spec_kb_chunks,
             )
-            if kb_chunks is None:
-                logger.error(f"Could not retrieve KB for: {question[:50]}")
-                kb_chunks = []
+            if spec_validation["is_valid"]:
+                logger.info(
+                    "SPECULATIVE GEN HIT ⚡⚡ "
+                    f"(tokens={len(g_tokens)}, kb={len(spec_kb_chunks)})"
+                )
+                response_text = spec_response
+                validation_report = spec_validation
+                kb_chunks = spec_kb_chunks
+                used_speculative = True
             else:
-                logger.info(f"Retrieved {len(kb_chunks)} KB chunks (fresh)")
+                logger.info(
+                    "Speculative response rejected by validator: "
+                    f"{spec_validation['reasons']}"
+                )
 
-                # Track embedding cost
-                if pipeline.cost_tracker:
-                    from src.cost_calculator import estimate_embedding_tokens
-                    emb_tokens = estimate_embedding_tokens(question)
-                    pipeline.cost_tracker.track_embedding(
-                        tokens=emb_tokens,
-                        question=question,
+        # Cancel stale speculative generation if we need to generate fresh.
+        if response_text is None:
+            await _speculative.cancel_gen()
+
+        # ── Retrieve KB chunks (or evidence for speculative chunks) ──
+        if response_text is None:
+            # Check if speculative retrieval is already ready.
+            if (
+                r_task
+                and r_task.done()
+                and not r_task.cancelled()
+            ):
+                try:
+                    kb_chunks = list(r_task.result() or [])
+                    logger.info(
+                        f"SPECULATIVE HIT: Using pre-fetched {len(kb_chunks)} KB chunks ⚡"
                     )
+                except Exception:
+                    kb_chunks = []
 
-        # Reset speculative retrieval state
-        await _speculative.clear_retrieval()
-
-        t_retrieve = time.perf_counter()
-        logger.info(
-            f"KB ready ({(t_retrieve - t_start)*1000:.0f}ms from start)"
-        )
-
-        # Generate response with OpenAI GPT-4o-mini (streaming) + 30s timeout restriction
-        full_response = []
-        try:
-            async with asyncio.timeout(30):
-                async for token in pipeline.response_agent.generate(
-                    question=question,
-                    kb_chunks=kb_chunks,
+            if not kb_chunks:
+                retrieval_bundle = await retry_with_backoff(
+                    pipeline.retriever.retrieve_with_evidence,
+                    query=normalized_question,
                     question_type=classification["type"],
-                    thinking_budget=classification["budget"],
-                ):
-                    full_response.append(token)
-                    await broadcast_token(token)
-        except asyncio.TimeoutError:
-            logger.error(f"Response generation timeout for: {question[:50]}")
-            error_msg = "[Response generation timeout - please try again]"
-            await broadcast_message({
-                "type": "error",
-                "message": error_msg
-            })
-            return
+                    max_retries=3,
+                )
+                if retrieval_bundle is None:
+                    logger.error(
+                        f"Could not retrieve KB for: {normalized_question[:50]}"
+                    )
+                    kb_chunks = []
+                    kb_evidence = []
+                else:
+                    kb_chunks = list(retrieval_bundle.get("chunks", []))
+                    kb_evidence = list(retrieval_bundle.get("evidence", []))
+                    logger.info(f"Retrieved {len(kb_chunks)} KB chunks (fresh)")
+
+                    # Track embedding cost for fresh retrieval only.
+                    if pipeline.cost_tracker:
+                        from src.cost_calculator import estimate_embedding_tokens
+                        emb_tokens = estimate_embedding_tokens(normalized_question)
+                        pipeline.cost_tracker.track_embedding(
+                            tokens=emb_tokens,
+                            question=normalized_question,
+                        )
+
+            # Build evidence if chunks came from speculative cache path.
+            if kb_chunks and not kb_evidence:
+                metadata_rows = await pipeline.retriever.retrieve_with_metadata(
+                    query=normalized_question,
+                    question_type=classification["type"],
+                    top_k=max(3, len(kb_chunks) * 3),
+                )
+                kb_evidence = pipeline.retriever._build_evidence_for_chunks(
+                    kb_chunks,
+                    metadata_rows,
+                )
+
+        else:
+            if kb_chunks and not kb_evidence:
+                metadata_rows = await pipeline.retriever.retrieve_with_metadata(
+                    query=normalized_question,
+                    question_type=classification["type"],
+                    top_k=max(3, len(kb_chunks) * 3),
+                )
+                kb_evidence = pipeline.retriever._build_evidence_for_chunks(
+                    kb_chunks,
+                    metadata_rows,
+                )
+
+        await _speculative.clear_retrieval()
+        t_retrieve = time.perf_counter()
+        logger.info(f"KB ready ({(t_retrieve - t_start)*1000:.0f}ms from start)")
+
+        # ── Generate validated response when speculative response isn't used ──
+        if response_text is None:
+            (
+                recent_questions,
+                recent_responses,
+                recent_types,
+            ) = _recent_response_context(max_items=3)
+            memory_context = (
+                pipeline.interview_memory.build_prompt_context(
+                    question=normalized_question,
+                    question_type=classification["type"],
+                )
+                if pipeline.interview_memory
+                else None
+            )
+
+            try:
+                async with asyncio.timeout(45):
+                    response_text, validation_report = (
+                        await pipeline.response_agent.generate_full_with_validation(
+                            question=normalized_question,
+                            kb_chunks=kb_chunks,
+                            question_type=classification["type"],
+                            thinking_budget=classification["budget"],
+                            recent_questions=recent_questions,
+                            recent_responses=recent_responses,
+                            recent_question_types=recent_types,
+                            memory_context=memory_context,
+                        )
+                    )
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"Response generation timeout for: {normalized_question[:50]}"
+                )
+                await broadcast_message({
+                    "type": "error",
+                    "message": "[Response generation timeout - please try again]",
+                })
+                return
+
+        response_text = response_text or ""
+        validation_report = validation_report or {
+            "is_valid": True,
+            "reasons": [],
+            "attempts": 1,
+            "retried": False,
+        }
+
+        # Send response to teleprompter once final text passes validation gate.
+        await _broadcast_text_as_tokens(response_text)
 
         pipeline.total_responses += 1
-        response_text = "".join(full_response)
         t_end = time.perf_counter()
         total_ms = (t_end - t_start) * 1000
         logger.info(
             f"Response generated: {len(response_text)} chars "
-            f"(total pipeline: {total_ms:.0f}ms)"
+            f"(total pipeline: {total_ms:.0f}ms, "
+            f"validated={validation_report.get('is_valid')}, "
+            f"speculative={used_speculative})"
         )
 
         # Track generation cost
         if pipeline.cost_tracker:
             from src.cost_calculator import estimate_tokens
-            # Estimate tokens: system prompt + KB chunks + question + response
-            system_prompt_tokens = 1024  # Average system prompt
-            kb_tokens = sum(len(chunk) // 4 for chunk in kb_chunks) if kb_chunks else 0
-            question_tokens = estimate_tokens(question)
-            output_tokens = estimate_tokens(response_text)
 
+            system_prompt_tokens = getattr(
+                pipeline.response_agent,
+                "system_prompt_token_estimate",
+                1024,
+            )
+            pricing_model = getattr(
+                pipeline.response_agent,
+                "pricing_model",
+                "openai_gpt_4o_mini",
+            )
+            supports_prompt_cache = bool(
+                getattr(pipeline.response_agent, "supports_prompt_cache", False)
+            )
+
+            kb_tokens = sum(len(chunk) // 4 for chunk in kb_chunks) if kb_chunks else 0
+            question_tokens = estimate_tokens(normalized_question)
+            output_tokens = estimate_tokens(response_text)
             total_input_tokens = system_prompt_tokens + kb_tokens + question_tokens
 
-            # Determine cache hits (simplified: check if this is a repeated type)
             cache_write_tokens = 0
             cache_read_tokens = 0
-            # On first call of each type, write system prompt to cache
-            # On subsequent calls, read from cache
-            if hasattr(pipeline.response_agent, '_cache_stats'):
-                type_calls = pipeline.response_agent._cache_stats.get("by_type", {}).get(classification["type"], {})
+            if supports_prompt_cache and hasattr(pipeline.response_agent, "_cache_stats"):
+                type_calls = pipeline.response_agent._cache_stats.get(
+                    "by_type",
+                    {},
+                ).get(classification["type"], {})
                 if type_calls.get("calls", 0) > 1:
-                    # Subsequent calls: use cache
                     cache_read_tokens = system_prompt_tokens
-                    total_input_tokens -= system_prompt_tokens  # Cache read doesn't count as input
+                    total_input_tokens -= system_prompt_tokens
                 elif type_calls.get("calls", 0) == 1:
-                    # First call: write to cache
                     cache_write_tokens = system_prompt_tokens
 
             pipeline.cost_tracker.track_generation(
                 input_tokens=total_input_tokens,
                 output_tokens=output_tokens,
-                question=question,
+                question=normalized_question,
+                api_name=pricing_model,
                 cache_write_tokens=cache_write_tokens,
                 cache_read_tokens=cache_read_tokens,
             )
+            await publish_saldo_update()
 
         # Update Session Metrics & Prometheus
         try:
-            prev_hits = getattr(pipeline.response_agent, '_last_cache_hits', 0)
-            curr_hits = pipeline.response_agent._cache_stats.get("cache_hits", 0) if hasattr(pipeline.response_agent, '_cache_stats') else 0
+            prev_hits = getattr(pipeline.response_agent, "_last_cache_hits", 0)
+            curr_hits = (
+                pipeline.response_agent._cache_stats.get("cache_hits", 0)
+                if hasattr(pipeline.response_agent, "_cache_stats")
+                else 0
+            )
             cache_hit = curr_hits > prev_hits
-            if hasattr(pipeline.response_agent, '_cache_stats'):
+            if hasattr(pipeline.response_agent, "_cache_stats"):
                 pipeline.response_agent._last_cache_hits = curr_hits
 
             qm = QuestionMetrics(
-                question_text=question,
+                question_text=normalized_question,
                 question_type=classification["type"],
                 duration_ms=total_ms,
                 cache_hit=cache_hit,
-                timestamp=datetime.now().isoformat()
+                timestamp=datetime.now().isoformat(),
             )
             if pipeline.session_metrics:
                 pipeline.session_metrics.questions.append(qm)
@@ -601,18 +1000,51 @@ async def process_question(question: str):
         except Exception as e:
             logger.warning(f"Failed to record Prometheus/Session metrics: {e}")
 
-        # Save to conversation history
-        pipeline.conversation_history.append({
-            "question": question,
+        history_entry = {
+            "question": normalized_question,
+            "raw_question": raw_question,
+            "normalized_question": normalized_question,
             "type": classification["type"],
+            "classification_reason": question_meta.get("filter_reason", "unknown"),
+            "fragment_risk": bool(question_meta.get("fragment_risk", False)),
+            "fragment_reason": question_meta.get("fragment_reason", "none"),
+            "provider": getattr(
+                pipeline.response_agent,
+                "last_provider_used",
+                "openai",
+            ),
             "response": response_text,
+            "validation": validation_report,
+            "kb_evidence": kb_evidence[:8],
+            "speculative_used": used_speculative,
             "timestamp": datetime.now().isoformat(),
-        })
+        }
+        pipeline.conversation_history.append(history_entry)
 
-        # Log conversation entry
-        _log_conversation(question, response_text, classification["type"])
+        if pipeline.interview_memory:
+            pipeline.interview_memory.ingest_generated_response(
+                question=normalized_question,
+                question_type=classification["type"],
+                response=response_text,
+                kb_chunks=kb_chunks,
+            )
 
-        # Send end-of-response marker
+        _log_conversation(
+            normalized_question,
+            response_text,
+            classification["type"],
+            metadata={
+                "raw_question": raw_question,
+                "normalized_question": normalized_question,
+                "classification_reason": question_meta.get("filter_reason", "unknown"),
+                "fragment_risk": bool(question_meta.get("fragment_risk", False)),
+                "fragment_reason": question_meta.get("fragment_reason", "none"),
+                "validation": validation_report,
+                "kb_evidence": kb_evidence[:8],
+                "speculative_used": used_speculative,
+            },
+        )
+
         await broadcast_message({"type": "response_end"})
 
     except Exception as e:
@@ -629,7 +1061,12 @@ async def process_question(question: str):
 _session_log_path: Optional[Path] = None
 
 
-def _log_conversation(question: str, response: str, q_type: str):
+def _log_conversation(
+    question: str,
+    response: str,
+    q_type: str,
+    metadata: Optional[dict] = None,
+):
     """Append a Q&A pair to the session log file."""
     global _session_log_path
     log_dir = Path(__file__).parent / "logs"
@@ -643,9 +1080,65 @@ def _log_conversation(question: str, response: str, q_type: str):
         logger.info(f"Conversation log: {_session_log_path}")
 
     ts = datetime.now().strftime("%H:%M:%S")
+    metadata = metadata or {}
     with open(_session_log_path, "a", encoding="utf-8") as f:
         f.write(f"## [{ts}] Question ({q_type})\n")
         f.write(f"> {question}\n\n")
+        raw_question = str(metadata.get("raw_question", "")).strip()
+        if raw_question and raw_question != question:
+            f.write(f"**Raw Question:** {raw_question}\n\n")
+
+        if metadata:
+            f.write("**Diagnostics:**\n")
+            normalized_question = str(
+                metadata.get("normalized_question", "")
+            ).strip()
+            if normalized_question:
+                f.write(f"- normalized_question: {normalized_question}\n")
+            if "classification_reason" in metadata:
+                f.write(
+                    f"- classification_reason: "
+                    f"{metadata.get('classification_reason')}\n"
+                )
+            if "fragment_risk" in metadata:
+                f.write(f"- fragment_risk: {metadata.get('fragment_risk')}\n")
+            if "fragment_reason" in metadata:
+                f.write(
+                    f"- fragment_reason: "
+                    f"{metadata.get('fragment_reason')}\n"
+                )
+            if "speculative_used" in metadata:
+                f.write(
+                    f"- speculative_used: "
+                    f"{metadata.get('speculative_used')}\n"
+                )
+            validation = metadata.get("validation")
+            if isinstance(validation, dict):
+                f.write(
+                    f"- validation_ok: {validation.get('is_valid')}\n"
+                )
+                if validation.get("reasons"):
+                    f.write(
+                        f"- validation_reasons: "
+                        f"{', '.join(validation.get('reasons', []))}\n"
+                    )
+                f.write(
+                    f"- generation_attempts: {validation.get('attempts', 1)}\n"
+                )
+            kb_evidence = metadata.get("kb_evidence", [])
+            if kb_evidence:
+                f.write("- kb_evidence:\n")
+                for item in kb_evidence[:8]:
+                    source = item.get("source", "unknown")
+                    topic = item.get("topic", "unknown")
+                    dist = item.get("distance", -1.0)
+                    snippet = str(item.get("snippet", "")).strip()
+                    f.write(
+                        f"  - {source} | topic={topic} | dist={dist:.4f} | "
+                        f"snippet={snippet}\n"
+                    )
+            f.write("\n")
+
         f.write(f"**Suggested Response:**\n{response}\n\n---\n\n")
 
 
@@ -692,7 +1185,7 @@ async def start_pipeline():
     """Initialize and start all pipeline agents."""
     logger.info("=" * 60)
     logger.info("  INTERVIEW COPILOT v4.0 — Starting Pipeline")
-    logger.info("  Architecture: OpenAI Realtime + gpt-4o-mini + Qt")
+    logger.info("  Architecture: OpenAI Realtime + Multi-Provider LLM + Qt")
     logger.info("=" * 60)
 
     # Initialize Observability
@@ -708,8 +1201,9 @@ async def start_pipeline():
     # Initialize agents
     pipeline.classifier = QuestionClassifier()
     pipeline.retriever = KnowledgeRetriever()
-    pipeline.response_agent = OpenAIAgent()
+    pipeline.response_agent = FallbackResponseManager()
     pipeline.question_filter = QuestionFilter()
+    pipeline.interview_memory = InterviewMemory()
 
     # Pre-warm API connections (TLS handshake, DNS, connection pool)
     # This eliminates cold-start latency on the first real question
@@ -806,6 +1300,7 @@ async def stop_pipeline():
             cost_report.responses_generated = pipeline.total_responses
             pipeline.cost_tracker.save_report(cost_report)
             logger.info(f"Total Session Cost: {format_cost_for_display(cost_report.total_cost_usd)}")
+            await publish_saldo_update()
         except Exception as e:
             logger.error(f"Error saving cost report: {e}")
 

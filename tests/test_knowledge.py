@@ -66,6 +66,16 @@ class TestQuestionClassifier:
         assert result["compound"] is True
         assert result["budget"] == BUDGET_MAP["hybrid"]
 
+    def test_classify_truncated_behavioral_as_situational(self):
+        """
+        Truncated-but-behavioral prompts should stay situational, not hybrid.
+        """
+        result = QuestionClassifier._fallback_classify(
+            "during a challenging period and what tactics you used?"
+        )
+        assert result["type"] == "situational"
+        assert result["budget"] == BUDGET_MAP["situational"]
+
     def test_classify_strengths(self):
         """Strengths question is personal."""
         result = QuestionClassifier._fallback_classify(
@@ -160,3 +170,79 @@ class TestKnowledgeRetriever:
 
         assert TOP_K_BY_TYPE["simple"] < TOP_K_BY_TYPE["hybrid"]
         assert TOP_K_BY_TYPE["personal"] <= TOP_K_BY_TYPE["company"]
+
+    def test_postprocess_semantic_dedup_and_mmr(self):
+        """MMR keeps diversity while semantic dedup removes near-clones."""
+        from src.knowledge.retrieval import KnowledgeRetriever
+
+        docs = [
+            "I prioritized urgent tickets and updated docs every shift.",
+            "I prioritized urgent tickets and updated documentation every shift.",
+            "I aligned multiple stakeholders through clear status updates.",
+            "I value company culture, measurable quality, and long-term growth.",
+        ]
+        metas = [
+            {"source": "star_stories_english.txt"},
+            {"source": "star_stories_english.txt"},
+            {"source": "profile_english.txt"},
+            {"source": "company_fit_english.txt"},
+        ]
+        distances = [0.09, 0.10, 0.14, 0.19]
+        query_embedding = [1.0, 0.0, 0.0]
+        doc_embeddings = [
+            [0.99, 0.01, 0.00],
+            [0.98, 0.02, 0.00],  # near-duplicate of first chunk
+            [0.42, 0.86, 0.05],
+            [0.18, 0.05, 0.97],
+        ]
+
+        selected = KnowledgeRetriever._postprocess_documents(
+            documents=docs,
+            metadatas=metas,
+            distances=distances,
+            max_results=3,
+            max_per_source=2,
+            query_embedding=query_embedding,
+            doc_embeddings=doc_embeddings,
+            semantic_dedup_threshold=0.95,
+            mmr_lambda=0.65,
+        )
+
+        normalized = [KnowledgeRetriever._normalize_doc(x) for x in selected]
+        assert len(selected) == 3
+        # Near-duplicate pair should not both survive semantic dedup.
+        assert sum("prioritized urgent tickets" in item for item in normalized) == 1
+        # Diversity: should include non-star source content too.
+        assert any("stakeholders" in item for item in normalized)
+        assert any("company culture" in item for item in normalized)
+
+    def test_build_evidence_for_chunks(self):
+        """Evidence mapping includes source metadata and snippet."""
+        from src.knowledge.retrieval import KnowledgeRetriever
+
+        chunks = [
+            "Action: I developed a disciplined routine at Webhelp and kept 92% QA.",
+            "Result: I maintained consistent quality during operational changes.",
+        ]
+        rows = [
+            {
+                "text": chunks[0],
+                "category": "personal",
+                "topic": "star stories english",
+                "source": "star_stories_english.txt",
+                "distance": 0.59,
+            },
+            {
+                "text": chunks[1],
+                "category": "personal",
+                "topic": "star stories english",
+                "source": "star_stories_english.txt",
+                "distance": 0.61,
+            },
+        ]
+
+        evidence = KnowledgeRetriever._build_evidence_for_chunks(chunks, rows)
+        assert len(evidence) == 2
+        assert evidence[0]["source"] == "star_stories_english.txt"
+        assert evidence[0]["distance"] == pytest.approx(0.59, rel=1e-4)
+        assert "disciplined routine" in evidence[0]["snippet"].lower()

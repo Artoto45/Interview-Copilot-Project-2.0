@@ -42,10 +42,15 @@ class DummyTeleprompter:
     def clear_text(self):
         self._current_text = ""
         self._read_char_index = 0
-    def update_candidate_progress(self, spoken_text: str):
+    def update_candidate_progress(self, spoken_text: str, final_pass: bool = False):
         # Progress logic usually in qt_display:
         from src.teleprompter.progress_tracker import estimate_char_progress
-        progress = estimate_char_progress(self._current_text, spoken_text)
+        progress = estimate_char_progress(
+            self._current_text,
+            spoken_text,
+            current_progress=self._read_char_index,
+            final_pass=final_pass,
+        )
         self._read_char_index = max(self._read_char_index, progress)
 
 

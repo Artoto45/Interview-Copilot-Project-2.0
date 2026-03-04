@@ -21,6 +21,7 @@ Keyboard shortcuts:
 
 import logging
 import sys
+import time
 from typing import Optional
 
 from PyQt5.QtWidgets import (
@@ -72,6 +73,7 @@ class SmartTeleprompter(QWidget):
     text_received = pyqtSignal(str)
     clear_requested = pyqtSignal()
     candidate_progress_received = pyqtSignal(str)
+    candidate_progress_finalize_received = pyqtSignal(str)
     response_cleared = pyqtSignal()
 
     def __init__(
@@ -93,6 +95,11 @@ class SmartTeleprompter(QWidget):
         self._waiting = True  # True while showing the waiting message
         
         self._scroll_animation: Optional[QPropertyAnimation] = None
+        self._smoothed_chars_per_second = 11.0
+        self._last_progress_ts = 0.0
+        self._last_scroll_ts = 0.0
+        self._stability_hold_until = 0.0
+        self._pending_visual_progress = 0
 
         self._setup_window()
         self._setup_ui()
@@ -103,6 +110,9 @@ class SmartTeleprompter(QWidget):
         self.clear_requested.connect(self._on_clear_requested)
         self.candidate_progress_received.connect(
             self._on_candidate_progress_received
+        )
+        self.candidate_progress_finalize_received.connect(
+            self._on_candidate_progress_finalize_received
         )
 
         # Show initial waiting message
@@ -226,9 +236,16 @@ class SmartTeleprompter(QWidget):
         """Thread-safe clear request (can be called from any thread)."""
         self.clear_requested.emit()
 
-    def update_candidate_progress(self, spoken_text: str):
+    def update_candidate_progress(
+        self,
+        spoken_text: str,
+        final_pass: bool = False,
+    ):
         """Thread-safe progress update (can be called from any thread)."""
-        self.candidate_progress_received.emit(spoken_text)
+        if final_pass:
+            self.candidate_progress_finalize_received.emit(spoken_text)
+        else:
+            self.candidate_progress_received.emit(spoken_text)
 
     @pyqtSlot()
     def _on_clear_requested(self):
@@ -236,6 +253,11 @@ class SmartTeleprompter(QWidget):
         self._current_text = ""
         self._candidate_spoken_buffer = ""
         self._read_char_index = 0
+        self._pending_visual_progress = 0
+        self._stability_hold_until = 0.0
+        self._last_progress_ts = 0.0
+        self._last_scroll_ts = 0.0
+        self._smoothed_chars_per_second = 11.0
         self._show_waiting_message()
         self.response_cleared.emit()
 
@@ -251,11 +273,76 @@ class SmartTeleprompter(QWidget):
             spoken_text=self._candidate_spoken_buffer,
             current_progress=self._read_char_index
         )
+        self._apply_progress_update(progress=progress, final_pass=False)
 
-        # Monotonic cursor: never move backwards on noisy transcript updates.
-        self._read_char_index = max(self._read_char_index, progress)
+    @pyqtSlot(str)
+    def _on_candidate_progress_finalize_received(self, spoken_text: str):
+        """Final pass on speech stop to recover difficult tail alignments."""
+        if not spoken_text.strip() or self._waiting:
+            return
+
+        self._candidate_spoken_buffer = spoken_text
+        progress = estimate_char_progress(
+            script_text=self._current_text,
+            spoken_text=self._candidate_spoken_buffer,
+            current_progress=self._read_char_index,
+            final_pass=True,
+        )
+        self._apply_progress_update(progress=progress, final_pass=True)
+
+    def _apply_progress_update(self, progress: int, final_pass: bool) -> None:
+        """
+        Apply a monotonic progress update with anti-jitter visual hold and
+        speaking-rate tracking for adaptive focus windows.
+        """
+        new_progress = max(self._read_char_index, int(progress))
+        step = new_progress - self._read_char_index
+        if step <= 0:
+            if final_pass and self._pending_visual_progress > self._read_char_index:
+                self._read_char_index = self._pending_visual_progress
+                self._pending_visual_progress = 0
+                self._render_text()
+                self._scroll_to_progress()
+            return
+
+        now = time.monotonic()
+        if self._last_progress_ts > 0:
+            dt = max(0.001, now - self._last_progress_ts)
+            instant_cps = min(120.0, step / dt)
+            # EWMA smoothing to avoid spikes from noisy ASR steps.
+            self._smoothed_chars_per_second = (
+                (self._smoothed_chars_per_second * 0.82)
+                + (instant_cps * 0.18)
+            )
+        self._last_progress_ts = now
+        self._read_char_index = new_progress
+
+        if final_pass:
+            self._pending_visual_progress = 0
+            self._stability_hold_until = 0.0
+            self._render_text()
+            self._scroll_to_progress()
+            return
+
+        # Stability hold: if ASR sends tiny frequent fluctuations, avoid visual jitter.
+        in_rapid_window = (now - self._last_scroll_ts) < 0.16
+        tiny_step = step < 6
+        if tiny_step and in_rapid_window:
+            self._stability_hold_until = max(self._stability_hold_until, now + 0.22)
+            self._pending_visual_progress = max(self._pending_visual_progress, new_progress)
+            return
+
+        if now < self._stability_hold_until and step < 10:
+            self._pending_visual_progress = max(self._pending_visual_progress, new_progress)
+            return
+
+        if self._pending_visual_progress > self._read_char_index:
+            self._read_char_index = self._pending_visual_progress
+        self._pending_visual_progress = 0
+
         self._render_text()
         self._scroll_to_progress()
+        self._last_scroll_ts = now
 
     def _show_waiting_message(self):
         """Show an initial waiting/listening message on startup."""
@@ -330,9 +417,14 @@ class SmartTeleprompter(QWidget):
         distant_fmt.setForeground(QBrush(QColor(200, 200, 210, 150)))
 
         # Define boundary indices
-        FOCUS_WINDOW_CHARS = 150
-        focus_start = min(self._read_char_index, len(self._current_text))
-        distant_start = min(focus_start + FOCUS_WINDOW_CHARS, len(self._current_text))
+        focus_window_chars, end_grace_chars = self._compute_visibility_windows()
+        anchor = min(self._read_char_index, len(self._current_text))
+        focus_start = anchor
+        if len(self._current_text) - anchor < end_grace_chars:
+            # Near the end, keep extra context visible to avoid an abrupt
+            # "only final words left" visual collapse.
+            focus_start = max(0, anchor - end_grace_chars)
+        distant_start = min(anchor + focus_window_chars, len(self._current_text))
         end_idx = len(self._current_text)
 
         # Apply Read formatting [0 to focus_start]
@@ -361,6 +453,37 @@ class SmartTeleprompter(QWidget):
                 "background: transparent; border: none;"
             )
 
+    def _compute_visibility_windows(self) -> tuple[int, int]:
+        """
+        Compute adaptive focus and end-grace windows from the visible viewport.
+
+        This keeps enough upcoming context visible when font size or window size
+        changes, and dynamically scales by speaking speed.
+        """
+        try:
+            metrics = self.text_edit.fontMetrics()
+            viewport_size = self.text_edit.viewport().size()
+
+            line_height = max(1, metrics.lineSpacing())
+            avg_char_width = max(1, metrics.averageCharWidth())
+            visible_lines = max(3, int(viewport_size.height() / line_height))
+            chars_per_line = max(20, int(viewport_size.width() / avg_char_width))
+            visible_chars = max(120, visible_lines * chars_per_line)
+
+            cps = max(4.0, min(40.0, float(self._smoothed_chars_per_second)))
+            # ~11 chars/s approximates comfortable spoken pacing.
+            pace_factor = max(0.78, min(1.8, cps / 11.0))
+
+            focus_window_chars = max(140, int(visible_chars * 0.48 * pace_factor))
+            end_grace_chars = max(
+                180,
+                int(visible_chars * (0.66 + (0.20 * pace_factor))),
+            )
+            return focus_window_chars, end_grace_chars
+        except Exception:
+            # Conservative fallback if metrics are temporarily unavailable.
+            return 170, 180
+
     def _scroll_to_progress(self):
         """Smoothly scroll to keep current reading point at the top of the window."""
         try:
@@ -383,7 +506,14 @@ class SmartTeleprompter(QWidget):
             target = max(0, int(absolute_y) - 30)
             target = min(scrollbar.maximum(), target)
             
-            print(f"DEBUG SCROLL: max={scrollbar.maximum()}, rect_y={cursor_rect.y()}, cur_scroll={current_scroll}, abs_y={absolute_y}, target={target}")
+            logger.debug(
+                "scroll max=%s rect_y=%s cur=%s abs=%s target=%s",
+                scrollbar.maximum(),
+                cursor_rect.y(),
+                current_scroll,
+                absolute_y,
+                target,
+            )
             
             # Animate the scrollbar
             self._animate_scroll(scrollbar, target, duration_ms=450)
