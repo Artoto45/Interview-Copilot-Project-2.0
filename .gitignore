@@ -23,6 +23,8 @@ chroma_data/
 logs/interview_*.md
 logs/metrics_session_*.json
 logs/costs_session_*.json
+tests/logs/
+tests/sync_output.json
 
 # Python
 __pycache__/
@@ -85,6 +87,9 @@ $RECYCLE.BIN/
 *.mp3
 *.mp4
 *.webm
+
+# External model repositories
+external/
 
 # IDE temp files
 .project

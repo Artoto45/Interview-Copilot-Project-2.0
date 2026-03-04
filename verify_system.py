@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Quick Verification Script for Interview Copilot v4.0
 =====================================================
-Verifica que el sistema está correctamente configurado y listo para ejecutar.
+Verifica que el sistema estÃ¡ correctamente configurado y listo para ejecutar.
 """
 
 import os
@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple
 
 
 class SystemChecker:
-    """Verifica requisitos del sistema y configuración"""
+    """Verifica requisitos del sistema y configuraciÃ³n"""
 
     def __init__(self):
         self.checks_passed = 0
@@ -22,7 +22,7 @@ class SystemChecker:
         self.root_dir = Path(__file__).parent
 
     def check(self, name: str, condition: bool, message: str = "") -> bool:
-        """Realiza una verificación"""
+        """Realiza una verificaciÃ³n"""
         if condition:
             print(f"[OK]   {name}")
             self.checks_passed += 1
@@ -40,7 +40,7 @@ class SystemChecker:
         self.warnings.append(message)
 
     def section(self, title: str):
-        """Imprime un encabezado de sección"""
+        """Imprime un encabezado de secciÃ³n"""
         print(f"\n{'='*60}")
         print(f"  {title}")
         print(f"{'='*60}")
@@ -50,7 +50,7 @@ class SystemChecker:
     # ========================================================================
 
     def check_python(self):
-        """Verifica versión de Python"""
+        """Verifica versiÃ³n de Python"""
         self.section("REQUISITOS DE PYTHON")
 
         version = sys.version_info
@@ -68,15 +68,16 @@ class SystemChecker:
             ("websockets", "WebSocket para teleprompter"),
             ("openai", "API de OpenAI"),
             ("dotenv", "Variables de entorno"),
-            ("numpy", "Computación numérica"),
+            ("numpy", "ComputaciÃ³n numÃ©rica"),
         ]
 
         optional = [
             ("google.genai", "API de Gemini"),
-            ("deepgram", "Transcripción Deepgram"),
+            ("deepgram", "TranscripciÃ³n Deepgram"),
             ("PyQt5", "UI del teleprompter"),
-            ("prometheus_client", "Métricas Prometheus"),
+            ("prometheus_client", "MÃ©tricas Prometheus"),
             ("chromadb", "Base de datos vectorial"),
+            ("vibevoice", "Microsoft VibeVoice (TTS opcional)"),
         ]
 
         print("\nDependencias Requeridas:")
@@ -113,6 +114,7 @@ class SystemChecker:
             "src/knowledge",
             "src/response",
             "src/teleprompter",
+            "src/voice",
             "kb",
             "logs",
         ]
@@ -143,6 +145,9 @@ class SystemChecker:
             ("SALDO_BASELINE_START_UTC", "Baseline RFC3339 para saldo live"),
             ("VOICEMEETER_DEVICE_USER", "Dispositivo de audio del usuario"),
             ("VOICEMEETER_DEVICE_INT", "Dispositivo de audio del entrevistador"),
+            ("VIBEVOICE_ENABLED", "Activa integracion de VibeVoice"),
+            ("VIBEVOICE_REPO_PATH", "Ruta local al repo VibeVoice"),
+            ("VIBEVOICE_MODEL_PATH", "Modelo realtime de VibeVoice"),
         ]
 
         # Intenta cargar .env
@@ -174,8 +179,8 @@ class SystemChecker:
                 self.warn(f"No configurada: {var}")
 
     def check_git(self):
-        """Verifica configuración de git"""
-        self.section("CONFIGURACIÓN GIT")
+        """Verifica configuraciÃ³n de git"""
+        self.section("CONFIGURACIÃ“N GIT")
 
         try:
             import subprocess
@@ -212,10 +217,10 @@ class SystemChecker:
             self.warn(f"No se pudo verificar git: {e}")
 
     def check_source_code(self):
-        """Verifica integridad del código fuente"""
-        self.section("INTEGRIDAD DEL CÓDIGO FUENTE")
+        """Verifica integridad del cÃ³digo fuente"""
+        self.section("INTEGRIDAD DEL CÃ“DIGO FUENTE")
 
-        # Verificar que main.py tiene los módulos críticos
+        # Verificar que main.py tiene los mÃ³dulos crÃ­ticos
         try:
             with open(self.root_dir / "main.py", "r") as f:
                 content = f.read()
@@ -234,7 +239,7 @@ class SystemChecker:
                 self.check(f"Importa {module}", import_stmt in content)
 
         except Exception as e:
-            self.warn(f"No se pudo verificar código fuente: {e}")
+            self.warn(f"No se pudo verificar cÃ³digo fuente: {e}")
 
     def check_kb(self):
         """Verifica base de conocimientos"""
@@ -282,7 +287,7 @@ class SystemChecker:
                 self.check(
                     f"Puerto {port} disponible ({description})",
                     is_available,
-                    f"Puerto {port} ya está en uso"
+                    f"Puerto {port} ya estÃ¡ en uso"
                 )
             finally:
                 sock.close()
@@ -335,9 +340,10 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     print("Para ejecutar el sistema:")
     print("  python main.py")
-    print("\nPara más opciones:")
+    print("\nPara mÃ¡s opciones:")
     print("  python main.py --help")
     print("="*60 + "\n")
 
     sys.exit(0 if success else 1)
+
 

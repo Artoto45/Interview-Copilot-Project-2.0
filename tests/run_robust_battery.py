@@ -21,7 +21,9 @@ CORE_TESTS = [
     "tests/test_response_validation.py",
     "tests/test_response_fallback_manager.py",
     "tests/test_main_pipeline_regression.py",
+    "tests/test_full_pipeline_realistic_adapters.py",
     "tests/test_interview_memory.py",
+    "tests/test_vibevoice_manager.py",
 ]
 
 ROBUST_EXTRA_TESTS = [

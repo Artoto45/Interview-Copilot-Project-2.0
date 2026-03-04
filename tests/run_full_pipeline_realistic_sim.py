@@ -190,6 +190,122 @@ class SyntheticResponseAgentAdapter(SyntheticResponseAgent):
             suffix = " " if idx < len(words) - 1 else ""
             yield word + suffix
 
+    def validate_generated_response(
+        self,
+        response_text: str,
+        question_type: str,
+        kb_chunks: list[str],
+    ) -> dict[str, Any]:
+        text = (response_text or "").strip()
+        if not text:
+            return {
+                "is_valid": False,
+                "reasons": ["empty_response"],
+                "attempts": 1,
+                "retried": False,
+            }
+        return {
+            "is_valid": True,
+            "reasons": [],
+            "attempts": 1,
+            "retried": False,
+        }
+
+    async def generate_full_with_validation(
+        self,
+        question: str,
+        kb_chunks: list[str],
+        question_type: str = "personal",
+        thinking_budget: int = 0,
+        recent_questions: Optional[list[str]] = None,
+        recent_responses: Optional[list[str]] = None,
+        recent_question_types: Optional[list[str]] = None,
+        memory_context: Optional[str] = None,
+    ) -> tuple[str, dict[str, Any]]:
+        text = await self.generate_full(
+            question=question,
+            kb_chunks=kb_chunks,
+            question_type=question_type,
+            thinking_budget=thinking_budget,
+            recent_questions=recent_questions,
+            recent_responses=recent_responses,
+            recent_question_types=recent_question_types,
+        )
+        return text, self.validate_generated_response(
+            response_text=text,
+            question_type=question_type,
+            kb_chunks=kb_chunks,
+        )
+
+
+class SyntheticKnowledgeRetrieverAdapter(SyntheticKnowledgeRetriever):
+    """
+    Adapter to provide evidence/metadata helpers expected by main.process_question.
+    """
+
+    async def retrieve_with_metadata(
+        self,
+        query: str,
+        question_type: str = "personal",
+        top_k: Optional[int] = None,
+    ) -> list[dict]:
+        chunks = await self.retrieve(
+            query=query,
+            question_type=question_type,
+            top_k=top_k,
+        )
+        rows: list[dict[str, Any]] = []
+        for idx, chunk in enumerate(chunks):
+            rows.append(
+                {
+                    "text": chunk,
+                    "category": question_type,
+                    "topic": f"synthetic_{question_type}",
+                    "source": (
+                        "star_stories_english.txt"
+                        if idx % 2 == 0
+                        else "profile_english.txt"
+                    ),
+                    "distance": 0.10 + (idx * 0.01),
+                }
+            )
+        return rows
+
+    def _build_evidence_for_chunks(
+        self,
+        chunks: list[str],
+        metadata_rows: list[dict],
+        max_snippet_chars: int = 160,
+    ) -> list[dict]:
+        return KnowledgeRetriever._build_evidence_for_chunks(
+            chunks=chunks,
+            metadata_rows=metadata_rows,
+            max_snippet_chars=max_snippet_chars,
+        )
+
+    async def retrieve_with_evidence(
+        self,
+        query: str,
+        question_type: str = "personal",
+        top_k: Optional[int] = None,
+        category_filter: Optional[str] = None,
+    ) -> dict[str, list]:
+        chunks = await self.retrieve(
+            query=query,
+            question_type=question_type,
+            top_k=top_k,
+            category_filter=category_filter,
+        )
+        if not chunks:
+            return {"chunks": [], "evidence": []}
+        metadata_rows = await self.retrieve_with_metadata(
+            query=query,
+            question_type=question_type,
+            top_k=max(len(chunks) * 3, top_k or len(chunks)),
+        )
+        evidence = self._build_evidence_for_chunks(chunks, metadata_rows)
+        return {"chunks": chunks, "evidence": evidence}
+
 
 INTERACTION_SCRIPT = [
     {"speaker": "interviewer", "kind": "statement", "text": "Let's restart the interview process."},
@@ -524,7 +640,7 @@ async def run_mode(mode: str, seed: int = 20260303, difficulty: str = "standard"
         pipeline.response_agent = OpenAIAgent()
         await pipeline.response_agent.warmup()
     else:
-        pipeline.retriever = SyntheticKnowledgeRetriever()
+        pipeline.retriever = SyntheticKnowledgeRetrieverAdapter()
         pipeline.response_agent = SyntheticResponseAgentAdapter()
 
     port = 8770 if mode == "synthetic" else 8771
