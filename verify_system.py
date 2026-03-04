@@ -24,19 +24,19 @@ class SystemChecker:
     def check(self, name: str, condition: bool, message: str = "") -> bool:
         """Realiza una verificación"""
         if condition:
-            print(f"✅ {name}")
+            print(f"[OK]   {name}")
             self.checks_passed += 1
             return True
         else:
-            print(f"❌ {name}")
+            print(f"[FAIL] {name}")
             if message:
-                print(f"   → {message}")
+                print(f"   -> {message}")
             self.checks_failed += 1
             return False
 
     def warn(self, message: str):
         """Registra una advertencia"""
-        print(f"⚠️  {message}")
+        print(f"[WARN] {message}")
         self.warnings.append(message)
 
     def section(self, title: str):
@@ -67,14 +67,13 @@ class SystemChecker:
         required = [
             ("websockets", "WebSocket para teleprompter"),
             ("openai", "API de OpenAI"),
-            ("google.generativeai", "API de Gemini"),
             ("dotenv", "Variables de entorno"),
-            ("pydantic", "Validación de datos"),
             ("numpy", "Computación numérica"),
         ]
 
         optional = [
-            ("deepgram-sdk", "Transcripción Deepgram"),
+            ("google.genai", "API de Gemini"),
+            ("deepgram", "Transcripción Deepgram"),
             ("PyQt5", "UI del teleprompter"),
             ("prometheus_client", "Métricas Prometheus"),
             ("chromadb", "Base de datos vectorial"),
@@ -134,13 +133,16 @@ class SystemChecker:
 
         required_env = [
             ("OPENAI_API_KEY", "Clave API de OpenAI"),
-            ("GEMINI_API_KEY", "Clave API de Gemini"),
         ]
 
         optional_env = [
+            ("GOOGLE_API_KEY", "Clave API de Gemini"),
             ("DEEPGRAM_API_KEY", "Clave API de Deepgram"),
-            ("AUDIO_DEVICE_USER", "Dispositivo de audio del usuario"),
-            ("AUDIO_DEVICE_INT", "Dispositivo de audio del entrevistador"),
+            ("OPENAI_ADMIN_KEY", "Clave Admin para saldo OpenAI live"),
+            ("ANTHROPIC_ADMIN_KEY", "Clave Admin para saldo Anthropic live"),
+            ("SALDO_BASELINE_START_UTC", "Baseline RFC3339 para saldo live"),
+            ("VOICEMEETER_DEVICE_USER", "Dispositivo de audio del usuario"),
+            ("VOICEMEETER_DEVICE_INT", "Dispositivo de audio del entrevistador"),
         ]
 
         # Intenta cargar .env
@@ -161,7 +163,7 @@ class SystemChecker:
             if value:
                 # Mostrar solo primeros caracteres por seguridad
                 masked = value[:10] + "..." if len(value) > 10 else value
-                print(f"   → Valor: {masked}")
+                print(f"   -> Valor: {masked}")
 
         print("\nVariables Opcionales:")
         for var, description in optional_env:
@@ -193,7 +195,7 @@ class SystemChecker:
                 print("\nRemotos configurados:")
                 for line in result.stdout.strip().split('\n'):
                     if line:
-                        print(f"   → {line}")
+                        print(f"   -> {line}")
 
             # Verificar rama actual
             result_branch = subprocess.run(
@@ -223,6 +225,8 @@ class SystemChecker:
                 "from src.transcription.openai_realtime import OpenAIRealtimeTranscriber",
                 "from src.knowledge.retrieval import KnowledgeRetriever",
                 "from src.response.openai_agent import OpenAIAgent",
+                "from src.response.fallback_manager import FallbackResponseManager",
+                "from src.response.interview_memory import InterviewMemory",
             ]
 
             for import_stmt in critical_imports:
@@ -290,29 +294,27 @@ class SystemChecker:
         total = self.checks_passed + self.checks_failed
         percentage = (self.checks_passed / total * 100) if total > 0 else 0
 
-        print(f"\n✅ Verificaciones pasadas: {self.checks_passed}")
-        print(f"❌ Verificaciones fallidas: {self.checks_failed}")
-        print(f"⚠️  Advertencias: {len(self.warnings)}")
+        print(f"\n[OK]   Verificaciones pasadas: {self.checks_passed}")
+        print(f"[INFO] Verificaciones fallidas: {self.checks_failed}")
+        print(f"[INFO] Advertencias: {len(self.warnings)}")
         print(f"\nScore: {percentage:.1f}% ({self.checks_passed}/{total})")
 
         if self.checks_failed == 0 and len(self.warnings) <= 2:
-            print("\n🎉 SISTEMA LISTO PARA EJECUTAR")
+            print("\nSISTEMA LISTO PARA EJECUTAR")
             return True
         elif self.checks_failed == 0:
-            print("\n⚠️  SISTEMA FUNCIONABLE (revisar advertencias)")
+            print("\nSISTEMA FUNCIONABLE (revisar advertencias)")
             return True
         else:
-            print("\n❌ SISTEMA NO LISTO (resolver errores)")
+            print("\nSISTEMA NO LISTO (resolver errores)")
             return False
 
     def run_all_checks(self) -> bool:
         """Ejecuta todas las verificaciones"""
         print("\n")
-        print("╔" + "="*58 + "╗")
-        print("║" + " "*58 + "║")
-        print("║" + "  INTERVIEW COPILOT v4.0 - VERIFICACIÓN DEL SISTEMA".center(58) + "║")
-        print("║" + " "*58 + "║")
-        print("╚" + "="*58 + "╝")
+        print("=" * 60)
+        print("INTERVIEW COPILOT v4.0 - VERIFICACION DEL SISTEMA")
+        print("=" * 60)
 
         self.check_python()
         self.check_dependencies()

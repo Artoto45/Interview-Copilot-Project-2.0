@@ -149,6 +149,30 @@ class TestQuestionFilter:
             "Can we restart the NLP process?"
         )
 
+    def test_flags_fragment_risk_for_truncated_behavioral_prompt(self):
+        analysis = self.qf.analyze_interview_turn(
+            "during a challenging period and what tactics you used?"
+        )
+        assert analysis["is_question"] is True
+        assert analysis["fragment_risk"] is True
+        assert analysis["fragment_reason"] in {
+            "leading_fragment_marker",
+            "short_ambiguous_question_fragment",
+        }
+
+    def test_no_fragment_risk_for_complete_behavioral_prompt(self):
+        analysis = self.qf.analyze_interview_turn(
+            "Can you describe a time during a challenging period and what tactics you used?"
+        )
+        assert analysis["is_question"] is True
+        assert analysis["fragment_risk"] is False
+
+    def test_normalize_question_text_strips_transition_prefixes(self):
+        normalized = self.qf.normalize_question_text(
+            "Absolutely. Let's reset. Could you describe a time you handled pressure?"
+        )
+        assert normalized.lower().startswith("could you describe")
+
     # ------------------------------------------------------------------
     # Stats tracking
     # ------------------------------------------------------------------

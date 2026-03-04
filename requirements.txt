@@ -9,12 +9,14 @@ numpy==2.2.3
 # --- Transcription (OpenAI Realtime via WebSocket) ---
 websockets==14.2
 python-dotenv==1.0.1
+deepgram-sdk>=3.8.0
 
 # --- Knowledge Base / RAG ---
 chromadb>=0.6.3
 faiss-cpu>=1.9.0
 langchain-text-splitters==0.3.6
 openai==1.63.2
+nltk>=3.9.0
 
 # --- LLM Response Generation ---
 google-genai>=1.65.0
@@ -30,3 +32,7 @@ pytest-cov==6.0.0
 
 # --- Utilities ---
 rich==13.9.4
+prometheus-client>=0.21.0
+
+# --- Optional local simulation helpers ---
+pyttsx3>=2.98

@@ -60,8 +60,10 @@ class TeleprompterBridge:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ws = None
         self._candidate_committed_text = ""
         self._candidate_live_text = ""
+        self._last_saldo_snapshot = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -84,8 +86,15 @@ class TeleprompterBridge:
     def stop(self):
         """Stop the bridge."""
         self._running = False
-        if self._loop:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._loop and self._loop.is_running() and self._ws is not None:
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._ws.close(),
+                    self._loop,
+                )
+                future.result(timeout=2.0)
+            except Exception as e:
+                logger.debug(f"WebSocket close during stop failed: {e}")
         if self._thread:
             self._thread.join(timeout=5.0)
         logger.info("Bridge stopped ✓")
@@ -142,18 +151,33 @@ class TeleprompterBridge:
     async def _listen(self):
         """Connect and listen for messages."""
         async with websockets.connect(self.ws_url) as ws:
+            self._ws = ws
             logger.info("Connected to pipeline WebSocket ✓")
-
-            async for raw_msg in ws:
-                try:
-                    msg = json.loads(raw_msg)
-                    self._handle_message(msg)
-                except json.JSONDecodeError:
-                    logger.warning(f"Invalid JSON: {raw_msg[:100]}")
+            try:
+                async for raw_msg in ws:
+                    try:
+                        msg = json.loads(raw_msg)
+                        self._handle_message(msg)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Invalid JSON: {raw_msg[:100]}")
+            finally:
+                self._ws = None
 
     # ------------------------------------------------------------------
     # Message Handling
     # ------------------------------------------------------------------
+    def _update_candidate_progress(self, text: str, final_pass: bool = False):
+        """Call teleprompter progress update with backward-compatible signature."""
+        if not self.teleprompter or not (text or "").strip():
+            return
+        try:
+            self.teleprompter.update_candidate_progress(
+                text,
+                final_pass=final_pass,
+            )
+        except TypeError:
+            self.teleprompter.update_candidate_progress(text)
+
     def _handle_message(self, msg: dict):
         """Process a message from the pipeline."""
         msg_type = msg.get("type", "")
@@ -185,8 +209,9 @@ class TeleprompterBridge:
                 else:
                     self._candidate_committed_text = text
                 self._candidate_live_text = ""
-                self.teleprompter.update_candidate_progress(
-                    self._candidate_committed_text
+                self._update_candidate_progress(
+                    self._candidate_committed_text,
+                    final_pass=False,
                 )
 
         elif msg_type == "subtitle_delta":
@@ -202,7 +227,29 @@ class TeleprompterBridge:
                 else:
                     current_full = self._candidate_live_text
 
-                self.teleprompter.update_candidate_progress(current_full)
+                self._update_candidate_progress(
+                    current_full,
+                    final_pass=False,
+                )
+
+        elif msg_type == "speech_event":
+            speaker = msg.get("speaker", "unknown")
+            event = msg.get("event", "")
+            if (
+                self.teleprompter
+                and speaker in {"user", "candidate"}
+                and event == "stopped"
+            ):
+                current_full = self._candidate_committed_text
+                if self._candidate_live_text:
+                    if current_full:
+                        current_full += " " + self._candidate_live_text
+                    else:
+                        current_full = self._candidate_live_text
+                self._update_candidate_progress(
+                    current_full,
+                    final_pass=True,
+                )
 
         elif msg_type == "error":
             error_msg = msg.get("message", "Unknown error")
@@ -211,6 +258,22 @@ class TeleprompterBridge:
                 self.teleprompter.append_text(
                     f"\n⚠ Error: {error_msg}\n"
                 )
+
+        elif msg_type == "saldo_update":
+            data = msg.get("data", {})
+            self._last_saldo_snapshot = data
+            fuel = data.get("fuel_gauge", {})
+            providers = data.get("providers", {})
+            openai = providers.get("openai", {})
+            deepgram = providers.get("deepgram", {})
+            anthropic = providers.get("anthropic", {})
+            logger.info(
+                "Saldo update | "
+                f"OpenAI=${openai.get('remaining_usd', 0):.4f}, "
+                f"Deepgram=${deepgram.get('remaining_usd', 0):.4f}, "
+                f"Anthropic=${anthropic.get('remaining_usd', 0):.4f}, "
+                f"fuel={fuel.get('human_readable_until_any_depletion')}"
+            )
 
     @property
     def is_running(self) -> bool:

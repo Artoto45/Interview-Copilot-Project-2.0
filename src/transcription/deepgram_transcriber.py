@@ -12,6 +12,8 @@ OpenAIRealtimeTranscriber.
 import asyncio
 import logging
 import os
+import threading
+import time
 from collections import deque
 from typing import Callable, Optional, Awaitable
 
@@ -26,6 +28,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger("transcription.deepgram")
+TURN_FLUSH_GRACE_MS = max(
+    80,
+    int(os.getenv("DEEPGRAM_TURN_FLUSH_GRACE_MS", "240")),
+)
 
 # Callback types
 TranscriptCallback = Callable[[str, str], Awaitable[None]]  # (speaker, text)
@@ -71,6 +77,10 @@ class DeepgramTranscriber:
         self._ws = None
         self._speaker = "interviewer"
         self._speech_active = False
+        self._buffer_lock = threading.Lock()
+        self._turn_metrics: deque = deque(maxlen=200)
+        self._turn_started_ts: float = 0.0
+        self._pending_flush_payload: Optional[dict] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -134,6 +144,11 @@ class DeepgramTranscriber:
     async def get_recent_history(self) -> str:
         """Get the last N completed turns."""
         return " | ".join(self._recent_turns)
+
+    def get_turn_metrics_snapshot(self) -> list[dict]:
+        """Return recent transcription turn metrics for diagnostics."""
+        with self._buffer_lock:
+            return list(self._turn_metrics)
 
     async def stop(self):
         """Stop transcription gracefully."""
@@ -216,8 +231,11 @@ class DeepgramTranscriber:
 
     def _on_speech_started(self, *args, **kwargs):
         """Callback from Deepgram when speech is detected."""
+        self._flush_pending_turn(flush_reason="interrupted_by_new_speech")
         if not self._speech_active:
             self._speech_active = True
+            with self._buffer_lock:
+                self._turn_started_ts = time.monotonic()
             logger.info(f"[{self._speaker}] Speech started")
             if self.on_speech_event and self._main_loop:
                 # Deepgram invokes callbacks from a background thread.
@@ -256,9 +274,10 @@ class DeepgramTranscriber:
 
             if sentence:
                 if is_final:
-                    self._turn_buffer.append(sentence)
-                    self._recent_turns.append(sentence)
-                    self._live_buffer = ""
+                    with self._buffer_lock:
+                        self._turn_buffer.append(sentence)
+                        self._recent_turns.append(sentence)
+                        self._live_buffer = ""
                     # Do NOT dispatch on_transcript here, wait for speech_final
                 else:
                     self._live_buffer = sentence
@@ -279,25 +298,102 @@ class DeepgramTranscriber:
                         )
                 
                 self._speech_active = False
-                
-                # Combine accumulated transcript fragments
-                full_text = " ".join(self._turn_buffer).strip()
-                if full_text:
-                    logger.info(f"[{self._speaker}] COMPLETED: {full_text}")
-                    # Force emit the full utterance to guarantee pipeline trigger
-                    if self.on_transcript and self._main_loop:
-                        asyncio.run_coroutine_threadsafe(
-                            self.on_transcript(self._speaker, full_text),
-                            self._main_loop
-                        )
-                    # Usually, final chunks trigger individually via is_final above
-                    # but 'speech_final' also indicates it's time for the AI to reply.
-                    # We dispatch a pseudo "COMPLETED [Turn End]" signal or simply rely
-                    # on the fact that 'speech_stopped' triggers the main.py question filter
-                
-                # Clear for next turn
-                self._turn_buffer.clear()
-                self._live_buffer = ""
+
+                flush_token = time.monotonic()
+                with self._buffer_lock:
+                    self._pending_flush_payload = {
+                        "token": flush_token,
+                        "turn_started_ts": self._turn_started_ts,
+                        "speech_final_ts": flush_token,
+                    }
+                    self._turn_started_ts = 0.0
+
+                grace_seconds = TURN_FLUSH_GRACE_MS / 1000.0
+                threading.Thread(
+                    target=self._flush_turn_after_grace,
+                    args=(flush_token, grace_seconds),
+                    daemon=True,
+                    name=f"deepgram-flush-{self._speaker}",
+                ).start()
 
         except Exception as e:
             logger.error(f"Error processing Deepgram message: {e}", exc_info=True)
+
+    def _flush_turn_after_grace(
+        self,
+        flush_token: float,
+        grace_seconds: float,
+    ):
+        """Flush buffered final segments after a short grace period."""
+        time.sleep(max(0.0, grace_seconds))
+        self._flush_pending_turn(
+            expected_token=flush_token,
+            flush_reason="grace_timeout",
+        )
+
+    def _flush_pending_turn(
+        self,
+        expected_token: Optional[float] = None,
+        flush_reason: str = "manual",
+    ):
+        """
+        Flush pending turn segments into a single transcript payload.
+
+        expected_token ensures stale flush workers cannot flush newer turns.
+        """
+        with self._buffer_lock:
+            payload = self._pending_flush_payload
+            if not payload:
+                return
+            if (
+                expected_token is not None
+                and float(payload.get("token", -1.0)) != float(expected_token)
+            ):
+                return
+
+            segments = list(self._turn_buffer)
+            self._turn_buffer.clear()
+            self._live_buffer = ""
+            self._pending_flush_payload = None
+            turn_started_ts = float(payload.get("turn_started_ts", 0.0) or 0.0)
+            speech_final_ts = float(payload.get("speech_final_ts", 0.0) or 0.0)
+
+        full_text = " ".join(segments).strip()
+        now = time.monotonic()
+        turn_duration_ms = (
+            int((now - turn_started_ts) * 1000)
+            if turn_started_ts > 0
+            else 0
+        )
+        flush_delay_ms = (
+            int((now - speech_final_ts) * 1000)
+            if speech_final_ts > 0
+            else 0
+        )
+
+        metric = {
+            "speaker": self._speaker,
+            "segment_count": len(segments),
+            "word_count": len(full_text.split()) if full_text else 0,
+            "char_count": len(full_text),
+            "turn_duration_ms": turn_duration_ms,
+            "flush_delay_ms": flush_delay_ms,
+            "flush_reason": flush_reason,
+            "timestamp": time.time(),
+        }
+        with self._buffer_lock:
+            self._turn_metrics.append(metric)
+
+        logger.info(
+            f"[{self._speaker}] TURN FLUSH "
+            f"(segments={metric['segment_count']}, words={metric['word_count']}, "
+            f"delay={metric['flush_delay_ms']}ms, reason={flush_reason})"
+        )
+
+        if full_text:
+            logger.info(f"[{self._speaker}] COMPLETED: {full_text}")
+            if self.on_transcript and self._main_loop:
+                asyncio.run_coroutine_threadsafe(
+                    self.on_transcript(self._speaker, full_text),
+                    self._main_loop,
+                )

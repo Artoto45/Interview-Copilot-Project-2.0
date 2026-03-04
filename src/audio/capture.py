@@ -71,6 +71,47 @@ class AudioCaptureAgent:
         self._stream_user: Optional[sd.RawInputStream] = None
         self._stream_int: Optional[sd.RawInputStream] = None
         self._running = False
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def _enqueue_nowait_drop_oldest(
+        self,
+        queue: asyncio.Queue[bytes],
+        chunk: bytes,
+    ):
+        """
+        Enqueue on the asyncio loop thread.
+        If queue is full, drop one stale chunk to keep recent audio.
+        """
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+
+        try:
+            queue.put_nowait(chunk)
+        except asyncio.QueueFull:
+            # If race conditions fill it again, drop this chunk.
+            pass
+
+    def _schedule_enqueue(self, queue: asyncio.Queue[bytes], chunk: bytes):
+        """
+        Thread-safe bridge from sounddevice callback thread to asyncio queue.
+        """
+        if self._loop and self._loop.is_running():
+            try:
+                self._loop.call_soon_threadsafe(
+                    self._enqueue_nowait_drop_oldest,
+                    queue,
+                    chunk,
+                )
+                return
+            except RuntimeError:
+                # Loop may be shutting down; fallback to best-effort direct write.
+                pass
+
+        # Used in tests and fallback when loop is unavailable.
+        self._enqueue_nowait_drop_oldest(queue, chunk)
 
     # ------------------------------------------------------------------
     # Callbacks (run in audio thread — keep minimal)
@@ -79,19 +120,13 @@ class AudioCaptureAgent:
         """Callback for user microphone stream."""
         if status:
             logger.warning(f"User audio status: {status}")
-        try:
-            self.user_queue.put_nowait(bytes(indata))
-        except asyncio.QueueFull:
-            pass  # Drop oldest to avoid backpressure
+        self._schedule_enqueue(self.user_queue, bytes(indata))
 
     def _cb_interviewer(self, indata: bytes, frames: int, time_info, status):
         """Callback for interviewer audio stream."""
         if status:
             logger.warning(f"Interviewer audio status: {status}")
-        try:
-            self.int_queue.put_nowait(bytes(indata))
-        except asyncio.QueueFull:
-            pass
+        self._schedule_enqueue(self.int_queue, bytes(indata))
 
     # ------------------------------------------------------------------
     # Device Resolution
@@ -152,6 +187,7 @@ class AudioCaptureAgent:
             logger.warning("AudioCaptureAgent already running")
             return
 
+        self._loop = asyncio.get_running_loop()
         logger.info("Starting audio capture…")
 
         # Resolve devices
@@ -262,9 +298,12 @@ class AudioCaptureAgent:
                                 f"(chunks: {_loopback_chunk_count[0]})"
                             )
 
-                        self.int_queue.put_nowait(samples.tobytes())
-                    except asyncio.QueueFull:
-                        pass
+                        self._schedule_enqueue(
+                            self.int_queue,
+                            samples.tobytes(),
+                        )
+                    except Exception as e:
+                        logger.debug(f"Loopback callback error: {e}")
 
                 self._stream_int = sd.RawInputStream(
                     device=loopback_dev,
@@ -308,6 +347,7 @@ class AudioCaptureAgent:
             self._stream_int = None
 
         self._running = False
+        self._loop = None
         logger.info("Audio capture stopped ✓")
 
     @property
